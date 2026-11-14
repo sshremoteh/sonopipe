@@ -59,6 +59,59 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"[Error] {msg}", file=sys.stderr)
             return 1
 
+    # 4. Action: Wireless Guide
+    if getattr(args, "wireless_guide", False):
+        print("\n=======================================================")
+        print("          Sonopipe Wireless ADB Setup Guide")
+        print("=======================================================")
+        print("Method 1: One-Click via USB Cable (Recommended)")
+        print("  1. Connect phone via USB cable with USB Debugging enabled.")
+        print("  2. Ensure phone and PC are on the same Wi-Fi network.")
+        print("  3. Run: sonopipe --enable-tcpip")
+        print("  4. Look up your phone's Wi-Fi IP and connect:")
+        print("     sonopipe --connect-wireless <PHONE_IP>")
+        print("  5. Unplug the USB cable! Sound will now stream over Wi-Fi.\n")
+        print("Method 2: Android 11+ Wireless Debugging (No Cable)")
+        print("  1. On Phone: Settings -> Developer Options -> Wireless debugging.")
+        print("  2. Tap 'Pair device with pairing code' -> note IP:Port & Code.")
+        print("  3. Run: adb pair <IP>:<PORT> <code>")
+        print("  4. Run: sonopipe --connect-wireless <MAIN_IP>:<MAIN_PORT>\n")
+        return 0
+
+    # 5. Action: Enable TCP/IP mode on USB device
+    if getattr(args, "enable_tcpip", None) is not None:
+        port = args.enable_tcpip
+        print(f"[ADB] Enabling TCP/IP mode on port {port}...")
+        ok, msg = adb.enable_tcpip(port, serial=args.device)
+        if ok:
+            print(f"[Success] Phone switched to TCP/IP port {port}. Output: {msg}")
+            ip = adb.get_device_wlan_ip(serial=args.device)
+            if ip:
+                print(f"[Info] Detected phone Wi-Fi IP: {ip}")
+                print(f"       Connect wirelessly using: sonopipe --connect-wireless {ip}:{port}")
+            return 0
+        else:
+            print(f"[Error] Failed to switch to TCP/IP mode: {msg}", file=sys.stderr)
+            return 1
+
+    # 6. Action: Connect to wireless device
+    if getattr(args, "connect_wireless", None) is not None:
+        target = args.connect_wireless.strip()
+        if ":" in target:
+            host, port_str = target.split(":", 1)
+            port = int(port_str)
+        else:
+            host = target
+            port = 5555
+        print(f"[ADB] Connecting to wireless device at {host}:{port}...")
+        ok, msg = adb.connect_wireless(host, port)
+        if ok:
+            print(f"[Success] {msg}")
+            return 0
+        else:
+            print(f"[Error] Failed to connect wirelessly: {msg}", file=sys.stderr)
+            return 1
+
     # Check ADB installation
     if not args.no_forward:
         if not adb.is_available():

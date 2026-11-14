@@ -1,6 +1,8 @@
 """
-Sonopipe v1.1.0 — Material Design 3 (MD3) Desktop GUI.
+Sonopipe v1.2.0 — Material Design 3 (MD3) Desktop GUI.
 Features:
+- USB & Wireless ADB (Wi-Fi) modes with one-click setup & pairing
+- Built-in interactive Wireless Connection Guide
 - Scrollable responsive layout (no clipping on any display/window size)
 - MD3 Dark elevation surfaces and tokens
 - Animated breathing live status badge
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QComboBox,
     QSpinBox,
+    QLineEdit,
     QSlider,
     QGroupBox,
     QFrame,
@@ -44,6 +47,8 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QScrollArea,
     QSizePolicy,
+    QDialog,
+    QStackedWidget,
 )
 
 from sonopipe.adb.manager import AdbManager
@@ -72,6 +77,188 @@ class ApkInstallWorker(QThread):
             progress_cb=lambda text: self.progress.emit(text),
         )
         self.finished.emit(success, msg)
+
+
+class WirelessGuideDialog(QDialog):
+    """Interactive Material Design 3 Wireless ADB Guide Dialog."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Wireless ADB Connection Guide")
+        self.resize(540, 560)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0F1116;
+                color: #F8FAFC;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            QGroupBox {
+                background-color: #171A21;
+                border: 1px solid #262934;
+                border-radius: 12px;
+                margin-top: 10px;
+                padding: 14px;
+                font-weight: bold;
+                color: #38BDF8;
+                font-size: 13px;
+            }
+            QLabel {
+                color: #CBD5E1;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+            QPushButton {
+                background-color: #2563EB;
+                color: #FFFFFF;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #1D4ED8;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # Header
+        h_lbl = QLabel("📶 How to connect via Wireless ADB")
+        h_lbl.setFont(QFont("sans-serif", 15, QFont.Bold))
+        h_lbl.setStyleSheet("color: #F8FAFC;")
+        layout.addWidget(h_lbl)
+
+        sub = QLabel("Stream sound to your phone wirelessly over the local Wi-Fi network without a USB cable.")
+        sub.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        layout.addWidget(sub)
+
+        # Method 1
+        g1 = QGroupBox("Method 1: One-Click via USB Cable (Easiest & Recommended)")
+        l1 = QVBoxLayout(g1)
+        l1.setSpacing(6)
+        l1.addWidget(QLabel("1. Connect your phone via USB cable with USB Debugging enabled."))
+        l1.addWidget(QLabel("2. Ensure phone and PC are connected to the same Wi-Fi network."))
+        l1.addWidget(QLabel("3. Click '⚡ Switch to Wi-Fi via USB' in the Wireless ADB tab."))
+        l1.addWidget(QLabel("4. Once connected, unplug the USB cable! Audio will stream over Wi-Fi."))
+        layout.addWidget(g1)
+
+        # Method 2
+        g2 = QGroupBox("Method 2: Android 11+ Wireless Debugging (No USB Cable)")
+        l2 = QVBoxLayout(g2)
+        l2.setSpacing(6)
+        l2.addWidget(QLabel("1. On Phone: Settings → Developer options → enable Wireless debugging."))
+        l2.addWidget(QLabel("2. Tap 'Pair device with pairing code'. Note the IP, Port and 6-digit code."))
+        l2.addWidget(QLabel("3. In Sonopipe: Click '🔑 Pair Code (Android 11+)' and enter pairing info."))
+        l2.addWidget(QLabel("4. Then enter the main Wireless debugging IP:Port and click 'Connect Wi-Fi'."))
+        layout.addWidget(g2)
+
+        # Method 3
+        g3 = QGroupBox("Method 3: Terminal Commands")
+        l3 = QVBoxLayout(g3)
+        l3.setSpacing(4)
+        cmd1 = QLabel("adb tcpip 5555")
+        cmd1.setStyleSheet("background-color: #111318; padding: 6px; font-family: monospace; color: #38BDF8; border-radius: 4px;")
+        cmd2 = QLabel("adb connect <PHONE_IP>:5555")
+        cmd2.setStyleSheet("background-color: #111318; padding: 6px; font-family: monospace; color: #38BDF8; border-radius: 4px;")
+        l3.addWidget(cmd1)
+        l3.addWidget(cmd2)
+        layout.addWidget(g3)
+
+        layout.addStretch()
+
+        btn_close = QPushButton("Got It")
+        btn_close.setFixedHeight(38)
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
+
+class WirelessPairDialog(QDialog):
+    """Dialog to pair devices using Android 11+ Wireless Pairing Code."""
+
+    def __init__(self, adb: AdbManager, default_ip: str = "", parent=None):
+        super().__init__(parent)
+        self.adb = adb
+        self.setWindowTitle("Android 11+ Wireless Pairing")
+        self.resize(420, 280)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0F1116;
+                color: #F8FAFC;
+            }
+            QLineEdit, QSpinBox {
+                background-color: #20242D;
+                color: #F8FAFC;
+                border: 1px solid #333846;
+                border-radius: 6px;
+                padding: 6px;
+                font-size: 13px;
+            }
+            QPushButton {
+                background-color: #2563EB;
+                color: white;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1D4ED8;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        lbl = QLabel("Enter the Pairing information shown on your phone's\n'Pair device with pairing code' screen:")
+        lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        layout.addWidget(lbl)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("IP Address:"), 0, 0)
+        self.ip_input = QLineEdit(default_ip or "192.168.1.")
+        grid.addWidget(self.ip_input, 0, 1)
+
+        grid.addWidget(QLabel("Pairing Port:"), 1, 0)
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1024, 65535)
+        self.port_spin.setValue(37000)
+        grid.addWidget(self.port_spin, 1, 1)
+
+        grid.addWidget(QLabel("6-Digit Code:"), 2, 0)
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText("e.g. 123456")
+        grid.addWidget(self.code_input, 2, 1)
+        layout.addLayout(grid)
+
+        layout.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setStyleSheet("background-color: #262932; color: #94A3B8;")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        btn_pair = QPushButton("Pair Device")
+        btn_pair.clicked.connect(self._do_pair)
+        btn_row.addWidget(btn_pair)
+        layout.addLayout(btn_row)
+
+    def _do_pair(self):
+        host = self.ip_input.text().strip()
+        port = self.port_spin.value()
+        code = self.code_input.text().strip()
+        if not host or not code:
+            QMessageBox.warning(self, "Missing Data", "Please fill in IP address and 6-digit pairing code.")
+            return
+
+        ok, msg = self.adb.pair_wireless(host, port, code)
+        if ok:
+            QMessageBox.information(self, "Pairing Successful", f"Successfully paired with {host}:{port}!\n\nNow enter the main connection port and click Connect Wi-Fi.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Pairing Failed", f"Could not pair with device:\n\n{msg}")
 
 
 class AnimatedStatusBadge(QWidget):
@@ -122,9 +309,8 @@ class AnimatedStatusBadge(QWidget):
         radius = h / 2.0
 
         if self._is_streaming:
-            # Pulsing alpha
             pulse = 0.5 + 0.5 * math.sin(self._glow_phase)
-            bg_color = QColor(6, 78, 59, 220)         # Emerald dark
+            bg_color = QColor(6, 78, 59, 220)
             border_color = QColor(16, 185, 129, int(160 + pulse * 95))
             text_color = QColor("#34D399")
             dot_color = QColor(52, 211, 153, int(200 + pulse * 55))
@@ -139,19 +325,16 @@ class AnimatedStatusBadge(QWidget):
             text_color = QColor("#94A3B8")
             dot_color = QColor("#64748B")
 
-        # Pill background
         painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(border_color, 1.2))
         painter.drawRoundedRect(QRectF(1, 1, w - 2, h - 2), radius, radius)
 
-        # Dot indicator
         dot_x = 14
         dot_y = h / 2.0
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(dot_color))
         painter.drawEllipse(QRectF(dot_x - 3.5, dot_y - 3.5, 7, 7))
 
-        # Text label (without symbol since we draw dot)
         clean_text = self._text.replace("● ", "").replace("○ ", "")
         painter.setFont(QFont("sans-serif", 10, QFont.Bold))
         painter.setPen(text_color)
@@ -178,7 +361,7 @@ class StereoVuMeterWidget(QWidget):
         self._r_peak_hold = 0.0
 
         self._decay_timer = QTimer(self)
-        self._decay_timer.setInterval(30)  # ~33 FPS
+        self._decay_timer.setInterval(30)
         self._decay_timer.timeout.connect(self._decay_peaks)
         self._decay_timer.start()
 
@@ -220,7 +403,6 @@ class StereoVuMeterWidget(QWidget):
         bar_h = 11
         gap = 7
 
-        # Ticks on top
         db_y = 11
         painter.setFont(QFont("monospace", 8))
         painter.setPen(QColor("#64748B"))
@@ -236,11 +418,9 @@ class StereoVuMeterWidget(QWidget):
             txt = f"{db_val}dB" if db_val != 0 else "0dB"
             painter.drawText(x_pos - 12, db_y, txt)
 
-        # Channel L
         l_y = 17
         self._draw_bar(painter, "L", bar_x, l_y, bar_w, bar_h, self._l_rms, self._l_peak_hold)
 
-        # Channel R
         r_y = l_y + bar_h + gap
         self._draw_bar(painter, "R", bar_x, r_y, bar_w, bar_h, self._r_rms, self._r_peak_hold)
 
@@ -249,25 +429,22 @@ class StereoVuMeterWidget(QWidget):
         painter.setPen(QColor("#94A3B8"))
         painter.drawText(2, y + h - 1, label)
 
-        # Track background
         painter.setBrush(QBrush(QColor("#161820")))
         painter.setPen(QPen(QColor("#272A34"), 1))
         painter.drawRoundedRect(QRectF(x, y, w, h), 4, 4)
 
-        # RMS Fill
         fill_w = int(w * rms)
         if fill_w > 0:
             grad = QLinearGradient(x, y, x + w, y)
-            grad.setColorAt(0.0, QColor("#10B981"))   # Mint / Emerald
-            grad.setColorAt(0.60, QColor("#38BDF8"))  # Sky blue
-            grad.setColorAt(0.82, QColor("#F59E0B"))  # Warning Amber
-            grad.setColorAt(0.96, QColor("#EF4444"))  # Peak Red
+            grad.setColorAt(0.0, QColor("#10B981"))
+            grad.setColorAt(0.60, QColor("#38BDF8"))
+            grad.setColorAt(0.82, QColor("#F59E0B"))
+            grad.setColorAt(0.96, QColor("#EF4444"))
 
             painter.setBrush(QBrush(grad))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(QRectF(x + 1, y + 1, max(2, fill_w - 2), h - 2), 3, 3)
 
-        # Peak indicator needle
         if peak_hold > 0.02:
             pk_x = min(x + w - 2, int(x + peak_hold * w))
             painter.setPen(QPen(QColor("#FFFFFF"), 2))
@@ -277,8 +454,8 @@ class StereoVuMeterWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sonopipe v1.1.0 — PC Audio to Android Speaker")
-        self.resize(540, 720)
+        self.setWindowTitle("Sonopipe v1.2.0 — PC Audio to Android Speaker")
+        self.resize(540, 750)
         self.setMinimumSize(440, 480)
 
         self.adb = AdbManager()
@@ -299,7 +476,6 @@ class MainWindow(QMainWindow):
         self.refresh_devices()
 
     def _init_ui(self):
-        # Master Scroll Area ensures NO interface clipping on any screen or tiling window
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -328,7 +504,7 @@ class MainWindow(QMainWindow):
         title_lbl.setStyleSheet("color: #F8FAFC; letter-spacing: -0.5px;")
         title_row.addWidget(title_lbl)
 
-        ver_badge = QLabel("v1.1.0")
+        ver_badge = QLabel("v1.2.0")
         ver_badge.setStyleSheet(
             "background-color: #172554; color: #60A5FA; font-size: 11px; "
             "font-weight: bold; padding: 2px 8px; border-radius: 9px; border: 1px solid #1D4ED8;"
@@ -337,38 +513,121 @@ class MainWindow(QMainWindow):
         title_row.addStretch()
         brand_col.addLayout(title_row)
 
-        sub_lbl = QLabel("Lossless low-latency system sound over USB")
+        sub_lbl = QLabel("Lossless low-latency sound over USB & Wireless ADB")
         sub_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
         brand_col.addWidget(sub_lbl)
         header_row.addLayout(brand_col)
 
         header_row.addStretch()
 
-        # Animated Status Pill
         self.status_badge = AnimatedStatusBadge()
         header_row.addWidget(self.status_badge)
         main_layout.addLayout(header_row)
 
-        # 2. CARD: ANDROID CONNECTION
-        conn_card = self._create_card("📱  Android Connection (ADB)")
-        conn_layout = QGridLayout(conn_card)
+        # 2. CARD: ANDROID CONNECTION (USB & WIRELESS ADB)
+        conn_card = self._create_card("📱  Android Connection (USB / Wireless Wi-Fi)")
+        conn_layout = QVBoxLayout(conn_card)
         conn_layout.setContentsMargins(14, 14, 14, 14)
-        conn_layout.setSpacing(10)
+        conn_layout.setSpacing(12)
 
-        conn_layout.addWidget(self._make_field_label("Target Device:"), 0, 0)
+        # Transport Segmented Mode Selector
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        self.btn_mode_usb = QPushButton("🔌  USB Cable")
+        self.btn_mode_usb.setCheckable(True)
+        self.btn_mode_usb.setChecked(True)
+        mode_row.addWidget(self.btn_mode_usb)
+
+        self.btn_mode_wifi = QPushButton("📶  Wireless ADB (Wi-Fi)")
+        self.btn_mode_wifi.setCheckable(True)
+        mode_row.addWidget(self.btn_mode_wifi)
+
+        mode_group = QButtonGroup(self)
+        mode_group.addButton(self.btn_mode_usb)
+        mode_group.addButton(self.btn_mode_wifi)
+        self.btn_mode_usb.clicked.connect(lambda: self.conn_stack.setCurrentIndex(0))
+        self.btn_mode_wifi.clicked.connect(lambda: self.conn_stack.setCurrentIndex(1))
+
+        conn_layout.addLayout(mode_row)
+
+        # Stacked Panel for USB vs Wireless controls
+        self.conn_stack = QStackedWidget()
+
+        # --- SUB-PANEL 0: USB MODE ---
+        usb_widget = QWidget()
+        usb_grid = QGridLayout(usb_widget)
+        usb_grid.setContentsMargins(0, 4, 0, 0)
+        usb_grid.setSpacing(8)
+
+        usb_grid.addWidget(self._make_field_label("Connected Device:"), 0, 0)
         self.device_combo = QComboBox()
         self.device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        conn_layout.addWidget(self.device_combo, 0, 1)
+        usb_grid.addWidget(self.device_combo, 0, 1)
 
         self.btn_refresh_devices = QPushButton("↻ Refresh")
-        self.btn_refresh_devices.setToolTip("Scan for connected ADB devices")
         self.btn_refresh_devices.clicked.connect(self.refresh_devices)
-        conn_layout.addWidget(self.btn_refresh_devices, 0, 2)
+        usb_grid.addWidget(self.btn_refresh_devices, 0, 2)
 
-        # TCP Port & Copy Command
-        conn_layout.addWidget(self._make_field_label("Forward Port:"), 1, 0)
+        # Helper to convert USB connection to Wireless in 1 click
+        self.btn_usb_to_wifi = QPushButton("⚡ Switch to Wi-Fi via USB (Auto-Setup)")
+        self.btn_usb_to_wifi.setToolTip("Auto-detect phone's Wi-Fi IP, enable TCP/IP port 5555, and connect wirelessly")
+        self.btn_usb_to_wifi.setStyleSheet(
+            "background-color: #1E293B; color: #38BDF8; border: 1px solid #0284C7; font-weight: bold; padding: 6px;"
+        )
+        self.btn_usb_to_wifi.clicked.connect(self._auto_switch_usb_to_wifi)
+        usb_grid.addWidget(self.btn_usb_to_wifi, 1, 0, 1, 3)
+
+        self.conn_stack.addWidget(usb_widget)
+
+        # --- SUB-PANEL 1: WIRELESS ADB MODE ---
+        wifi_widget = QWidget()
+        wifi_grid = QGridLayout(wifi_widget)
+        wifi_grid.setContentsMargins(0, 4, 0, 0)
+        wifi_grid.setSpacing(8)
+
+        wifi_grid.addWidget(self._make_field_label("Phone Wi-Fi IP:"), 0, 0)
+        self.wifi_ip_input = QLineEdit()
+        self.wifi_ip_input.setPlaceholderText("e.g. 192.168.1.50")
+        wifi_grid.addWidget(self.wifi_ip_input, 0, 1)
+
+        wifi_grid.addWidget(self._make_field_label("Port:"), 0, 2)
+        self.wifi_port_spin = QSpinBox()
+        self.wifi_port_spin.setRange(1024, 65535)
+        self.wifi_port_spin.setValue(5555)
+        self.wifi_port_spin.setFixedWidth(75)
+        wifi_grid.addWidget(self.wifi_port_spin, 0, 3)
+
+        btn_wifi_row = QHBoxLayout()
+        btn_wifi_row.setSpacing(6)
+
+        self.btn_wifi_connect = QPushButton("📶 Connect Wi-Fi")
+        self.btn_wifi_connect.setStyleSheet("background-color: #065F46; color: #6EE7B7; font-weight: bold;")
+        self.btn_wifi_connect.clicked.connect(self._connect_wireless_adb)
+        btn_wifi_row.addWidget(self.btn_wifi_connect)
+
+        self.btn_wifi_disconnect = QPushButton("Disconnect")
+        self.btn_wifi_disconnect.clicked.connect(self._disconnect_wireless_adb)
+        btn_wifi_row.addWidget(self.btn_wifi_disconnect)
+
+        self.btn_wifi_pair = QPushButton("🔑 Pair (Android 11+)")
+        self.btn_wifi_pair.setToolTip("Pair with phone using 6-digit wireless pairing code")
+        self.btn_wifi_pair.clicked.connect(self._open_pair_dialog)
+        btn_wifi_row.addWidget(self.btn_wifi_pair)
+
+        self.btn_wifi_guide = QPushButton("📖 Guide")
+        self.btn_wifi_guide.setToolTip("Step-by-step wireless connection instructions")
+        self.btn_wifi_guide.clicked.connect(self._open_wireless_guide)
+        btn_wifi_row.addWidget(self.btn_wifi_guide)
+
+        wifi_grid.addLayout(btn_wifi_row, 1, 0, 1, 4)
+
+        self.conn_stack.addWidget(wifi_widget)
+        conn_layout.addWidget(self.conn_stack)
+
+        # Port & Quick Commands (Common to both modes)
         port_row = QHBoxLayout()
         port_row.setSpacing(8)
+        port_row.addWidget(self._make_field_label("Audio Stream Port:"))
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1024, 65535)
@@ -382,9 +641,9 @@ class MainWindow(QMainWindow):
         port_row.addWidget(self.btn_copy_cmd)
         port_row.addStretch()
 
-        conn_layout.addLayout(port_row, 1, 1, 1, 2)
+        conn_layout.addLayout(port_row)
 
-        # APK Install Button (MD3 Filled Tonal Button)
+        # APK Install Button
         self.btn_install_apk = QPushButton("📲  Install & Launch APK on Phone")
         self.btn_install_apk.setToolTip("Install the mobile receiver app directly via ADB")
         self.btn_install_apk.setStyleSheet(
@@ -392,7 +651,7 @@ class MainWindow(QMainWindow):
             "font-weight: bold; padding: 8px; border-radius: 8px; font-size: 13px;"
         )
         self.btn_install_apk.clicked.connect(self._on_install_apk_clicked)
-        conn_layout.addWidget(self.btn_install_apk, 2, 0, 1, 3)
+        conn_layout.addWidget(self.btn_install_apk)
 
         main_layout.addWidget(conn_card)
 
@@ -453,7 +712,6 @@ class MainWindow(QMainWindow):
         vol_layout.setContentsMargins(14, 14, 14, 14)
         vol_layout.setSpacing(10)
 
-        # Volume slider row
         vol_row = QHBoxLayout()
         vol_row.setSpacing(10)
 
@@ -477,7 +735,6 @@ class MainWindow(QMainWindow):
 
         vol_layout.addLayout(vol_row)
 
-        # Stereo VU Meter
         self.meter_widget = StereoVuMeterWidget()
         vol_layout.addWidget(self.meter_widget)
 
@@ -585,7 +842,7 @@ class MainWindow(QMainWindow):
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
         }
-        QComboBox, QSpinBox {
+        QComboBox, QSpinBox, QLineEdit {
             background-color: #20242D;
             color: #F8FAFC;
             border: 1px solid #333846;
@@ -593,10 +850,10 @@ class MainWindow(QMainWindow):
             padding: 6px 10px;
             min-height: 22px;
         }
-        QComboBox:hover, QSpinBox:hover {
+        QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
             border-color: #4B5563;
         }
-        QComboBox:focus, QSpinBox:focus {
+        QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
             border-color: #3B82F6;
         }
         QComboBox::drop-down {
@@ -653,6 +910,10 @@ class MainWindow(QMainWindow):
         self.vol_slider.setValue(saved_vol)
         self._on_volume_changed(saved_vol)
 
+        saved_ip = self.settings.value("wifi_ip", "", type=str)
+        if saved_ip:
+            self.wifi_ip_input.setText(saved_ip)
+
         saved_preset = self.settings.value("preset", 960, type=int)
         if saved_preset == 480:
             self.btn_p10.setChecked(True)
@@ -668,6 +929,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("port", self.port_spin.value())
         self.settings.setValue("volume", self.vol_slider.value())
         self.settings.setValue("preset", self.chunk_frames)
+        self.settings.setValue("wifi_ip", self.wifi_ip_input.text().strip())
 
     def refresh_devices(self):
         self.device_combo.clear()
@@ -677,12 +939,14 @@ class MainWindow(QMainWindow):
 
         devices = self.adb.list_devices()
         if not devices:
-            self.device_combo.addItem("○ No ADB devices connected via USB", "")
+            self.device_combo.addItem("○ No devices connected (USB or Wi-Fi)", "")
             return
 
         for dev in devices:
-            name = dev.model or "Android Device"
-            label = f"{name} ({dev.serial})"
+            is_wifi = ":" in dev.serial
+            tag = " [Wi-Fi]" if is_wifi else " [USB]"
+            name = dev.model or ("Wireless Device" if is_wifi else "Android Device")
+            label = f"{name}{tag} ({dev.serial})"
             self.device_combo.addItem(label, dev.serial)
 
         self.refresh_audio_sources()
@@ -753,6 +1017,83 @@ class MainWindow(QMainWindow):
         self.btn_copy_cmd.setText("✓ Copied!")
         QTimer.singleShot(1500, lambda: self.btn_copy_cmd.setText("📋 Copy Forward Command"))
 
+    # Wireless ADB Handlers
+    def _auto_switch_usb_to_wifi(self):
+        devices = self.adb.list_devices()
+        usb_devices = [d for d in devices if ":" not in d.serial and d.state == "device"]
+        if not usb_devices:
+            QMessageBox.warning(
+                self,
+                "No USB Device",
+                "Please connect your Android phone via USB cable first.\n\n"
+                "Once plugged in, this button will automatically switch it to Wireless ADB."
+            )
+            return
+
+        target_serial = usb_devices[0].serial
+        ip = self.adb.get_device_wlan_ip(target_serial)
+        if not ip:
+            QMessageBox.warning(
+                self,
+                "Wi-Fi IP Not Found",
+                "Could not auto-detect the phone's Wi-Fi IP address.\n\n"
+                "Please ensure the phone is connected to Wi-Fi, or switch to the 'Wireless ADB' tab and enter the IP manually."
+            )
+            return
+
+        ok_tcp, out_tcp = self.adb.enable_tcpip(5555, serial=target_serial)
+        if not ok_tcp:
+            QMessageBox.critical(self, "Error", f"Failed to enable TCP/IP mode:\n\n{out_tcp}")
+            return
+
+        ok_conn, out_conn = self.adb.connect_wireless(ip, 5555)
+        if ok_conn:
+            self.wifi_ip_input.setText(ip)
+            self._save_settings()
+            self.refresh_devices()
+            QMessageBox.information(
+                self,
+                "Wireless ADB Connected!",
+                f"🎉 Successfully connected to phone wirelessly at {ip}:5555!\n\n"
+                f"You can now UNPLUG the USB cable. Audio streaming will work seamlessly over Wi-Fi."
+            )
+            self.btn_mode_wifi.setChecked(True)
+            self.conn_stack.setCurrentIndex(1)
+        else:
+            QMessageBox.warning(self, "Connection Failed", f"Enabled TCP/IP on phone, but failed to connect to {ip}:5555:\n\n{out_conn}")
+
+    def _connect_wireless_adb(self):
+        ip = self.wifi_ip_input.text().strip()
+        port = self.wifi_port_spin.value()
+        if not ip:
+            QMessageBox.warning(self, "Missing IP", "Please enter your phone's Wi-Fi IP address.")
+            return
+
+        self._save_settings()
+        ok, msg = self.adb.connect_wireless(ip, port)
+        if ok:
+            self.refresh_devices()
+            QMessageBox.information(self, "Connected", f"Connected wirelessly to {ip}:{port}!")
+        else:
+            QMessageBox.warning(self, "Connection Failed", f"Could not connect to {ip}:{port}:\n\n{msg}\n\nMake sure Wireless Debugging is on or click 'Guide' for help.")
+
+    def _disconnect_wireless_adb(self):
+        ip = self.wifi_ip_input.text().strip()
+        port = self.wifi_port_spin.value()
+        target = f"{ip}:{port}" if ip else None
+        ok, msg = self.adb.disconnect_wireless(target)
+        self.refresh_devices()
+        QMessageBox.information(self, "Disconnected", f"Wireless device disconnected: {msg}")
+
+    def _open_pair_dialog(self):
+        default_ip = self.wifi_ip_input.text().strip()
+        dlg = WirelessPairDialog(self.adb, default_ip=default_ip, parent=self)
+        dlg.exec()
+
+    def _open_wireless_guide(self):
+        dlg = WirelessGuideDialog(self)
+        dlg.exec()
+
     def _on_install_apk_clicked(self):
         selected_serial = self.device_combo.currentData() or None
         if not self.adb.is_available():
@@ -784,7 +1125,6 @@ class MainWindow(QMainWindow):
         port = self.port_spin.value()
         selected_serial = self.device_combo.currentData() or None
 
-        # 1. Automatic ADB Port Forwarding
         if self.adb.is_available():
             forward_ok = self.adb.forward_port(local_port=port, remote_port=port, serial=selected_serial)
             if not forward_ok:
@@ -792,14 +1132,13 @@ class MainWindow(QMainWindow):
                     self,
                     "ADB Forward Notice",
                     f"Could not automatically execute 'adb forward tcp:{port} tcp:{port}'.\n\n"
-                    f"Ensure USB debugging is authorized on your phone.\n\n"
+                    f"Ensure device is connected and authorized.\n\n"
                     f"Do you want to continue?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
                 if ans != QMessageBox.Yes:
                     return
 
-        # 2. Extract options
         backend_idx = self.backend_combo.currentIndex()
         backend_name = None
         if backend_idx == 1:
@@ -814,7 +1153,6 @@ class MainWindow(QMainWindow):
         channels = 2
         vol = self.vol_slider.value() / 100.0
 
-        # 3. Create and launch AudioStreamer
         self.streamer = AudioStreamer(
             host="127.0.0.1",
             port=port,
@@ -837,7 +1175,6 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
 
-        # Update UI state to Live
         self.status_badge.set_streaming(True)
         self.btn_toggle.setText("■   STOP STREAMING")
         self.btn_toggle.setStyleSheet(
@@ -863,6 +1200,12 @@ class MainWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool):
         self.device_combo.setEnabled(enabled)
         self.btn_refresh_devices.setEnabled(enabled)
+        self.btn_mode_usb.setEnabled(enabled)
+        self.btn_mode_wifi.setEnabled(enabled)
+        self.btn_usb_to_wifi.setEnabled(enabled)
+        self.btn_wifi_connect.setEnabled(enabled)
+        self.btn_wifi_disconnect.setEnabled(enabled)
+        self.btn_wifi_pair.setEnabled(enabled)
         self.port_spin.setEnabled(enabled)
         self.backend_combo.setEnabled(enabled)
         self.source_combo.setEnabled(enabled)

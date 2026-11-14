@@ -188,3 +188,127 @@ class AdbManager:
             return res.returncode == 0, output
         except Exception as e:
             return False, str(e)
+
+    def enable_tcpip(self, port: int = 5555, serial: Optional[str] = None) -> tuple[bool, str]:
+        """Switch target device to TCP/IP mode on given port."""
+        cmd = [self.adb_path]
+        if serial:
+            cmd.extend(["-s", serial])
+        cmd.extend(["tcpip", str(port)])
+
+        try:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            out = (res.stdout + "\n" + res.stderr).strip()
+            return res.returncode == 0, out
+        except Exception as e:
+            return False, str(e)
+
+    def connect_wireless(self, host: str, port: int = 5555) -> tuple[bool, str]:
+        """Connect to an Android device over Wi-Fi via adb connect <host>:<port>."""
+        target = f"{host.strip()}:{port}"
+        cmd = [self.adb_path, "connect", target]
+
+        try:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=12,
+            )
+            out = (res.stdout + "\n" + res.stderr).strip()
+            if "connected to" in out.lower() or "already connected" in out.lower():
+                return True, out
+            return False, out
+        except Exception as e:
+            return False, str(e)
+
+    def pair_wireless(self, host: str, port: int, pairing_code: str) -> tuple[bool, str]:
+        """Pair with device using Android 11+ wireless debugging pairing code."""
+        target = f"{host.strip()}:{port}"
+        cmd = [self.adb_path, "pair", target, pairing_code.strip()]
+
+        try:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+            out = (res.stdout + "\n" + res.stderr).strip()
+            if "successfully paired" in out.lower():
+                return True, out
+            return False, out
+        except Exception as e:
+            return False, str(e)
+
+    def disconnect_wireless(self, target: Optional[str] = None) -> tuple[bool, str]:
+        """Disconnect wireless device (or all wireless devices if target is None)."""
+        cmd = [self.adb_path, "disconnect"]
+        if target:
+            cmd.append(target.strip())
+
+        try:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=8,
+            )
+            out = (res.stdout + "\n" + res.stderr).strip()
+            return res.returncode == 0, out
+        except Exception as e:
+            return False, str(e)
+
+    def get_device_wlan_ip(self, serial: Optional[str] = None) -> Optional[str]:
+        """Attempt to discover the device's Wi-Fi IPv4 address while connected."""
+        cmd = [self.adb_path]
+        if serial:
+            cmd.extend(["-s", serial])
+        cmd.extend(["shell", "ip -f inet addr show wlan0"])
+
+        try:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0 and "inet " in res.stdout:
+                for part in res.stdout.split():
+                    if "/" in part and not part.startswith("/"):
+                        ip = part.split("/")[0]
+                        if ip.count(".") == 3:
+                            return ip
+        except Exception:
+            pass
+
+        # Fallback to getprop
+        cmd_prop = [self.adb_path]
+        if serial:
+            cmd_prop.extend(["-s", serial])
+        cmd_prop.extend(["shell", "getprop dhcp.wlan0.ipaddress"])
+        try:
+            res = subprocess.run(
+                cmd_prop,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+            )
+            ip = res.stdout.strip()
+            if ip.count(".") == 3:
+                return ip
+        except Exception:
+            pass
+
+        return None

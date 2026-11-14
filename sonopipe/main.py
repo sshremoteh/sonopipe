@@ -99,6 +99,26 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Build (if needed) and install APK onto connected phone via ADB, then launch it",
     )
+    parser.add_argument(
+        "--connect-wireless",
+        type=str,
+        default=None,
+        metavar="IP[:PORT]",
+        help="Connect to phone wirelessly over Wi-Fi via ADB (default port 5555)",
+    )
+    parser.add_argument(
+        "--enable-tcpip",
+        nargs="?",
+        const=5555,
+        type=int,
+        metavar="PORT",
+        help="Switch USB-connected phone to TCP/IP mode (default port: 5555)",
+    )
+    parser.add_argument(
+        "--wireless-guide",
+        action="store_true",
+        help="Print step-by-step Wireless ADB setup instructions and exit",
+    )
 
     return parser.parse_args()
 
@@ -112,6 +132,9 @@ def main():
         or args.list_adb_devices
         or args.list_audio_devices
         or args.install_apk
+        or (args.connect_wireless is not None)
+        or (args.enable_tcpip is not None)
+        or args.wireless_guide
     )
 
     if has_cli_flag:

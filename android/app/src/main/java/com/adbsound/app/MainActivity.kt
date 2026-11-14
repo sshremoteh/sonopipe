@@ -158,7 +158,8 @@ class MainActivity : AppCompatActivity() {
             binding.etPort.isEnabled = false
         }
 
-        binding.tvAdbCommand.text = "adb forward tcp:${state.port} tcp:${state.port}"
+        val ip = getDeviceWifiIp() ?: "Wi-Fi not connected"
+        binding.tvAdbCommand.text = "USB: adb forward tcp:${state.port} tcp:${state.port}\nWireless: $ip (Port 5555)"
 
         val channelText = if (state.channels == 1) getString(R.string.channel_mono) else getString(R.string.channel_stereo)
         binding.tvAudioSpecs.text = String.format(
@@ -179,5 +180,22 @@ class MainActivity : AppCompatActivity() {
         state.errorMessage?.let { msg ->
             binding.tvStatusSub.text = "Error: $msg"
         }
+    }
+
+    private fun getDeviceWifiIp(): String? {
+        try {
+            val interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
+            for (intf in interfaces) {
+                if (intf.name.contains("wlan") || intf.name.contains("ap")) {
+                    val addrs = java.util.Collections.list(intf.inetAddresses)
+                    for (addr in addrs) {
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            return addr.hostAddress
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
     }
 }
