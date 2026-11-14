@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
+    QLineEdit,
+    QSpinBox,
     QPushButton,
     QTabWidget,
     QMessageBox,
@@ -188,3 +191,100 @@ class WirelessQrDialog(QDialog):
         btn_close.setFixedHeight(38)
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close)
+
+
+class WirelessPairDialog(QDialog):
+    """Dialog to pair devices using Android 11+ Wireless Pairing Code."""
+
+    def __init__(self, adb: AdbManager, default_ip: str = "", parent=None):
+        super().__init__(parent)
+        self.adb = adb
+        self.setWindowTitle("Android 11+ Wireless Pairing")
+        self.resize(420, 260)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0B0D12;
+                color: #F8FAFC;
+            }
+            QLabel {
+                color: #94A3B8;
+                font-size: 12px;
+            }
+            QLineEdit, QSpinBox {
+                background-color: #13161F;
+                color: #F8FAFC;
+                border: 1px solid #1E2330;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }
+            QPushButton {
+                background-color: #2563EB;
+                color: white;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #1D4ED8;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        lbl = QLabel("Enter the Pairing information shown on your phone's\n'Pair device with pairing code' screen:")
+        lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        layout.addWidget(lbl)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("IP Address:"), 0, 0)
+        self.ip_input = QLineEdit(default_ip or "192.168.1.")
+        grid.addWidget(self.ip_input, 0, 1)
+
+        grid.addWidget(QLabel("Pairing Port:"), 1, 0)
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1024, 65535)
+        self.port_spin.setValue(37000)
+        grid.addWidget(self.port_spin, 1, 1)
+
+        grid.addWidget(QLabel("6-Digit Code:"), 2, 0)
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText("e.g. 123456")
+        grid.addWidget(self.code_input, 2, 1)
+        layout.addLayout(grid)
+
+        layout.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setStyleSheet("background-color: #1E2330; color: #94A3B8;")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        btn_pair = QPushButton("Pair Device")
+        btn_pair.clicked.connect(self._do_pair)
+        btn_row.addWidget(btn_pair)
+        layout.addLayout(btn_row)
+
+    def _do_pair(self):
+        host = self.ip_input.text().strip()
+        port = self.port_spin.value()
+        code = self.code_input.text().strip()
+        if not host or not code:
+            QMessageBox.warning(self, "Missing Data", "Please fill in IP address and 6-digit pairing code.")
+            return
+
+        ok, msg = self.adb.pair_wireless(host, port, code)
+        if ok:
+            QMessageBox.information(
+                self,
+                "Pairing Successful",
+                f"Successfully paired with {host}:{port}!\n\nNow enter the main connection port and click Connect Wi-Fi.",
+            )
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Pairing Failed", f"Could not pair:\n\n{msg}")
+

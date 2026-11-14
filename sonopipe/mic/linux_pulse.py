@@ -19,7 +19,9 @@ class LinuxVirtualMic(VirtualMicBase):
     def __init__(self, sample_rate: int = 48000, channels: int = 1):
         super().__init__(sample_rate, channels)
         self.sink_name = "sonopipe_mic_sink"
-        self._module_id: Optional[str] = None
+        self.source_name = "sonopipe_mic"
+        self._sink_module_id: Optional[str] = None
+        self._source_module_id: Optional[str] = None
         self._proc: Optional[subprocess.Popen] = None
         self._prev_default_source: Optional[str] = None
         self._pactl = shutil.which("pactl")
@@ -33,7 +35,7 @@ class LinuxVirtualMic(VirtualMicBase):
             print("[VirtualMic] 'pactl' or 'pacat' not found in PATH", file=sys.stderr)
             return False
 
-        # 1. Unload any lingering sonopipe_mic_sink module
+        # 1. Unload any lingering sonopipe modules
         self._cleanup_old_module()
 
         # Save current default sink so we can ensure PipeWire doesn't switch speakers to the mic sink!
@@ -46,24 +48,42 @@ class LinuxVirtualMic(VirtualMicBase):
             except Exception:
                 pass
 
-        # 2. Load module-null-sink
-        cmd = [
+        # 2. Load module-null-sink for audio intake
+        cmd_sink = [
             self._pactl,
             "load-module",
             "module-null-sink",
             f"sink_name={self.sink_name}",
-            "sink_properties=device.description=\"Sonopipe_Virtual_Microphone\"",
+            "sink_properties=device.description=\"Sonopipe_Mic_Internal\"",
         ]
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            res = subprocess.run(cmd_sink, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
             if res.returncode == 0:
-                self._module_id = res.stdout.strip()
+                self._sink_module_id = res.stdout.strip()
             else:
                 print(f"[VirtualMic] Failed to load null-sink module: {res.stderr}", file=sys.stderr)
                 return False
         except Exception as e:
             print(f"[VirtualMic] Error running pactl: {e}", file=sys.stderr)
             return False
+
+        # 3. Load module-remap-source so PipeWire & Desktop mixers present it as a real INPUT microphone
+        cmd_source = [
+            self._pactl,
+            "load-module",
+            "module-remap-source",
+            f"master={self.sink_name}.monitor",
+            f"source_name={self.source_name}",
+            "source_properties=device.description=\"Sonopipe_Virtual_Microphone\"",
+        ]
+        try:
+            res_source = subprocess.run(cmd_source, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            if res_source.returncode == 0:
+                self._source_module_id = res_source.stdout.strip()
+            else:
+                print(f"[VirtualMic] Warning: could not load module-remap-source: {res_source.stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"[VirtualMic] Warning creating remap source: {e}", file=sys.stderr)
 
         # Ensure default output sink remains physical speakers (never the mic sink!)
         if orig_default_sink and self._pactl:
@@ -72,7 +92,7 @@ class LinuxVirtualMic(VirtualMicBase):
             except Exception:
                 pass
 
-        # 3. Start pacat streaming process writing EXCLUSIVELY into the null sink
+        # 4. Start pacat streaming process writing EXCLUSIVELY into the null sink
         pacat_cmd = [
             self._pacat,
             "-p",
@@ -96,15 +116,16 @@ class LinuxVirtualMic(VirtualMicBase):
                 env=env,
             )
             self.is_active = True
-            print(f"[VirtualMic] Created virtual microphone '{self.sink_name}.monitor' (Module ID: {self._module_id})")
+            active_src = self.source_name if self._source_module_id else f"{self.sink_name}.monitor"
+            print(f"[VirtualMic] Created virtual microphone '{active_src}' (Sink Module: {self._sink_module_id}, Source Module: {self._source_module_id})")
 
             # Set as default recording source so apps pick it up automatically
             if self._pactl:
                 try:
                     out = subprocess.check_output([self._pactl, "get-default-source"], text=True, timeout=2).strip()
-                    if out and out != f"{self.sink_name}.monitor":
+                    if out and out != active_src:
                         self._prev_default_source = out
-                    subprocess.run([self._pactl, "set-default-source", f"{self.sink_name}.monitor"], timeout=2)
+                    subprocess.run([self._pactl, "set-default-source", active_src], timeout=2)
                 except Exception:
                     pass
 
@@ -148,12 +169,19 @@ class LinuxVirtualMic(VirtualMicBase):
                 pass
             self._prev_default_source = None
 
-        if self._module_id and self._pactl:
+        if self._source_module_id and self._pactl:
             try:
-                subprocess.run([self._pactl, "unload-module", self._module_id], timeout=3)
+                subprocess.run([self._pactl, "unload-module", self._source_module_id], timeout=3)
             except Exception:
                 pass
-            self._module_id = None
+            self._source_module_id = None
+
+        if self._sink_module_id and self._pactl:
+            try:
+                subprocess.run([self._pactl, "unload-module", self._sink_module_id], timeout=3)
+            except Exception:
+                pass
+            self._sink_module_id = None
 
     def _cleanup_old_module(self):
         if not self._pactl:
@@ -161,7 +189,7 @@ class LinuxVirtualMic(VirtualMicBase):
         try:
             out = subprocess.check_output([self._pactl, "list", "modules", "short"], text=True, timeout=3)
             for line in out.splitlines():
-                if self.sink_name in line:
+                if self.sink_name in line or self.source_name in line:
                     mod = line.split()[0]
                     subprocess.run([self._pactl, "unload-module", mod], timeout=2)
         except Exception:
