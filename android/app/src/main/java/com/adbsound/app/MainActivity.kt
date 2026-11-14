@@ -34,6 +34,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val requestMicPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            Toast.makeText(this, "Microphone permission is required to stream mic", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val localBinder = binder as AudioReceiverService.LocalBinder
@@ -81,6 +89,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupListeners() {
+        binding.toggleModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked && (checkedId == R.id.btnModeMic || checkedId == R.id.btnModeDuplex)) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    requestMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        }
+
         binding.btnToggleService.setOnClickListener {
             val isRunning = service?.stateFlow?.value?.isRunning ?: false
             if (isRunning) {
@@ -89,11 +106,25 @@ class MainActivity : AppCompatActivity() {
                 }
                 startService(intent)
             } else {
+                val mode = when (binding.toggleModeGroup.checkedButtonId) {
+                    R.id.btnModeMic -> AudioReceiverService.MODE_MIC
+                    R.id.btnModeDuplex -> AudioReceiverService.MODE_DUPLEX
+                    else -> AudioReceiverService.MODE_SPEAKER
+                }
+
+                if (mode != AudioReceiverService.MODE_SPEAKER &&
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    requestMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    return@setOnClickListener
+                }
+
                 val portStr = binding.etPort.text.toString().trim()
                 val port = portStr.toIntOrNull() ?: AudioReceiverService.DEFAULT_PORT
                 val intent = Intent(this, AudioReceiverService::class.java).apply {
                     action = AudioReceiverService.ACTION_START
                     putExtra(AudioReceiverService.EXTRA_PORT, port)
+                    putExtra(AudioReceiverService.EXTRA_MODE, mode)
                 }
                 ContextCompat.startForegroundService(this, intent)
             }
@@ -126,40 +157,57 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUi(state: AudioReceiverService.ServiceState) {
+        val isConnected = state.isSpeakerConnected || state.isMicConnected
+        val modeText = when (state.mode) {
+            AudioReceiverService.MODE_MIC -> "Microphone"
+            AudioReceiverService.MODE_DUPLEX -> "Duplex Headset"
+            else -> "Speaker"
+        }
+
         if (!state.isRunning) {
             binding.statusIndicator.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_red)
             binding.tvStatusTitle.text = getString(R.string.status_stopped)
-            binding.tvStatusSub.text = "Press Start to open listener"
+            binding.tvStatusSub.text = "Select mode and press Start"
             binding.btnToggleService.text = getString(R.string.btn_start)
             binding.btnToggleService.setBackgroundColor(
                 ContextCompat.getColor(this, R.color.accent_blue)
             )
             binding.etPort.isEnabled = true
-        } else if (state.isClientConnected) {
+            binding.toggleModeGroup.isEnabled = true
+        } else if (isConnected) {
             binding.statusIndicator.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_green)
-            binding.tvStatusTitle.text = getString(R.string.status_streaming)
-            binding.tvStatusSub.text = "Receiving audio stream via ADB"
+            binding.tvStatusTitle.text = "$modeText: Streaming Active"
+            binding.tvStatusSub.text = "Transmitting audio with PC via ADB"
             binding.btnToggleService.text = getString(R.string.btn_stop)
             binding.btnToggleService.setBackgroundColor(
                 ContextCompat.getColor(this, R.color.accent_red)
             )
             binding.etPort.isEnabled = false
+            binding.toggleModeGroup.isEnabled = false
         } else {
             binding.statusIndicator.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_yellow)
-            binding.tvStatusTitle.text = "Listening on port ${state.port}"
+            binding.tvStatusTitle.text = "$modeText: Listening"
             binding.tvStatusSub.text = "Waiting for ADB connection from PC..."
             binding.btnToggleService.text = getString(R.string.btn_stop)
             binding.btnToggleService.setBackgroundColor(
                 ContextCompat.getColor(this, R.color.accent_red)
             )
             binding.etPort.isEnabled = false
+            binding.toggleModeGroup.isEnabled = false
         }
 
         val ip = getDeviceWifiIp() ?: "Wi-Fi not connected"
-        binding.tvAdbCommand.text = "USB: adb forward tcp:${state.port} tcp:${state.port}\nWireless: $ip (Port 5555)"
+        val cmdText = if (state.mode == AudioReceiverService.MODE_MIC) {
+            "USB: adb forward tcp:${state.micPort} tcp:${state.micPort}\nWi-Fi IP: $ip"
+        } else if (state.mode == AudioReceiverService.MODE_DUPLEX) {
+            "USB: adb forward tcp:${state.port} tcp:${state.port}\n     adb forward tcp:${state.micPort} tcp:${state.micPort}\nWi-Fi IP: $ip"
+        } else {
+            "USB: adb forward tcp:${state.port} tcp:${state.port}\nWi-Fi IP: $ip"
+        }
+        binding.tvAdbCommand.text = cmdText
 
         val channelText = if (state.channels == 1) getString(R.string.channel_mono) else getString(R.string.channel_stereo)
         binding.tvAudioSpecs.text = String.format(

@@ -17,8 +17,20 @@ import java.nio.ByteOrder
 object AdbProtocol {
     val MAGIC_BYTES = byteArrayOf('A'.code.toByte(), 'D'.code.toByte(), 'B'.code.toByte(),
                                  'S'.code.toByte(), 'N'.code.toByte(), 'D'.code.toByte())
+    val MIC_MAGIC_BYTES = byteArrayOf('A'.code.toByte(), 'D'.code.toByte(), 'B'.code.toByte(),
+                                     'M'.code.toByte(), 'I'.code.toByte(), 'C'.code.toByte())
     const val HEADER_SIZE = 16
     const val CURRENT_VERSION: Short = 1
+
+    fun createMicHeader(sampleRate: Int = 48000, channels: Int = 1): ByteArray {
+        val bb = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put(MIC_MAGIC_BYTES)
+        bb.putShort(CURRENT_VERSION)
+        bb.putInt(sampleRate)
+        bb.putShort(channels.toShort())
+        bb.putShort(16.toShort())
+        return bb.array()
+    }
 
     data class AudioStreamConfig(
         val version: Short,

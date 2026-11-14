@@ -22,9 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import kotlin.math.sqrt
 
 class AudioReceiverService : Service() {
 
@@ -36,27 +38,46 @@ class AudioReceiverService : Service() {
         const val ACTION_START = "com.adbsound.app.START"
         const val ACTION_STOP = "com.adbsound.app.STOP"
         const val EXTRA_PORT = "extra_port"
+        const val EXTRA_MIC_PORT = "extra_mic_port"
+        const val EXTRA_MODE = "extra_mode"
+
+        const val MODE_SPEAKER = 0
+        const val MODE_MIC = 1
+        const val MODE_DUPLEX = 2
+
         const val DEFAULT_PORT = 12850
+        const val DEFAULT_MIC_PORT = 12851
     }
 
     data class ServiceState(
         val isRunning: Boolean = false,
-        val isClientConnected: Boolean = false,
+        val mode: Int = MODE_SPEAKER,
+        val isSpeakerConnected: Boolean = false,
+        val isMicConnected: Boolean = false,
         val port: Int = DEFAULT_PORT,
+        val micPort: Int = DEFAULT_MIC_PORT,
         val sampleRate: Int = 48000,
         val channels: Int = 2,
         val totalBytesReceived: Long = 0,
         val bytesPerSecond: Long = 0,
+        val totalBytesSent: Long = 0,
+        val micRmsLevel: Float = 0.0f,
         val errorMessage: String? = null
     )
 
     private val binder = LocalBinder()
     private val scope = CoroutineScope(Dispatchers.IO + Job())
-    private var serverJob: Job? = null
+    private var speakerServerJob: Job? = null
+    private var micServerJob: Job? = null
 
-    private var serverSocket: ServerSocket? = null
-    private var currentClientSocket: Socket? = null
+    private var speakerServerSocket: ServerSocket? = null
+    private var currentSpeakerClientSocket: Socket? = null
+
+    private var micServerSocket: ServerSocket? = null
+    private var currentMicClientSocket: Socket? = null
+
     private var player: AudioTrackPlayer? = null
+    private var micSource: AudioRecordSource? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     private val _stateFlow = MutableStateFlow(ServiceState())
@@ -82,108 +103,105 @@ class AudioReceiverService : Service() {
         when (action) {
             ACTION_START -> {
                 val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
-                startListening(port)
+                val micPort = intent?.getIntExtra(EXTRA_MIC_PORT, DEFAULT_MIC_PORT) ?: DEFAULT_MIC_PORT
+                val mode = intent?.getIntExtra(EXTRA_MODE, MODE_SPEAKER) ?: MODE_SPEAKER
+                startServiceStreams(port, micPort, mode)
             }
             ACTION_STOP -> {
-                stopListening()
+                stopAllStreams()
                 stopSelf()
             }
         }
         return START_NOT_STICKY
     }
 
-    fun startListening(port: Int) {
-        if (_stateFlow.value.isRunning && _stateFlow.value.port == port) {
-            return
-        }
+    fun startServiceStreams(port: Int, micPort: Int, mode: Int) {
+        stopAllStreams()
 
-        stopListening()
-
-        startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.notification_listening)))
+        startForeground(NOTIFICATION_ID, buildNotification("Sonopipe active"))
 
         try {
-            wakeLock?.acquire(24 * 60 * 60 * 1000L /* 24 hours */)
+            wakeLock?.acquire(24 * 60 * 60 * 1000L)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire wake lock", e)
         }
 
-        _stateFlow.value = ServiceState(isRunning = true, port = port)
+        _stateFlow.value = ServiceState(
+            isRunning = true,
+            mode = mode,
+            port = port,
+            micPort = micPort
+        )
 
-        serverJob = scope.launch {
-            runServerLoop(port)
+        // 1. Launch Speaker Server if applicable
+        if (mode == MODE_SPEAKER || mode == MODE_DUPLEX) {
+            speakerServerJob = scope.launch {
+                runSpeakerServerLoop(port)
+            }
+        }
+
+        // 2. Launch Mic Server if applicable
+        if (mode == MODE_MIC || mode == MODE_DUPLEX) {
+            micServerJob = scope.launch {
+                runMicServerLoop(micPort)
+            }
         }
     }
 
-    private suspend fun runServerLoop(port: Int) {
+    // --- SPEAKER RECEIVER LOOP ---
+    private suspend fun runSpeakerServerLoop(port: Int) {
         try {
-            serverSocket = ServerSocket(port).apply {
-                reuseAddress = true
-            }
-            Log.d(TAG, "ServerSocket listening on port $port")
+            speakerServerSocket = ServerSocket(port).apply { reuseAddress = true }
+            Log.d(TAG, "Speaker ServerSocket listening on port $port")
 
-            while (scope.isActive && serverSocket != null && !serverSocket!!.isClosed) {
-                _stateFlow.value = _stateFlow.value.copy(
-                    isClientConnected = false,
-                    errorMessage = null
-                )
-                updateNotification(getString(R.string.notification_listening))
+            while (scope.isActive && speakerServerSocket != null && !speakerServerSocket!!.isClosed) {
+                _stateFlow.value = _stateFlow.value.copy(isSpeakerConnected = false)
+                updateNotification()
 
                 val client = try {
-                    serverSocket!!.accept()
+                    speakerServerSocket!!.accept()
                 } catch (e: SocketException) {
                     break
                 }
 
                 client.tcpNoDelay = true
                 client.receiveBufferSize = 65536
-                currentClientSocket = client
-                Log.d(TAG, "Client connected from ${client.inetAddress}:${client.port}")
+                currentSpeakerClientSocket = client
 
-                _stateFlow.value = _stateFlow.value.copy(isClientConnected = true)
-                updateNotification(getString(R.string.notification_streaming))
+                _stateFlow.value = _stateFlow.value.copy(isSpeakerConnected = true)
+                updateNotification()
 
-                handleClientStream(client)
+                handleSpeakerClientStream(client)
 
-                currentClientSocket = null
+                currentSpeakerClientSocket = null
                 player?.release()
                 player = null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Server error", e)
+            Log.e(TAG, "Speaker server error", e)
             _stateFlow.value = _stateFlow.value.copy(errorMessage = e.message)
         } finally {
-            closeQuietly(serverSocket)
-            serverSocket = null
-            _stateFlow.value = _stateFlow.value.copy(isRunning = false, isClientConnected = false)
+            closeQuietly(speakerServerSocket)
+            speakerServerSocket = null
         }
     }
 
-    private fun handleClientStream(client: Socket) {
+    private fun handleSpeakerClientStream(client: Socket) {
         var inputStream: InputStream? = null
         try {
             inputStream = client.getInputStream()
 
-            // 1. Read Protocol Header
-            val config = AdbProtocol.parseHeader(inputStream)
-            if (config == null) {
-                Log.w(TAG, "Invalid ADB Sound header, closing connection")
-                return
-            }
-
-            Log.i(TAG, "Audio stream config: $config")
+            val config = AdbProtocol.parseHeader(inputStream) ?: return
             _stateFlow.value = _stateFlow.value.copy(
                 sampleRate = config.sampleRate,
                 channels = config.channels
             )
 
-            // 2. Initialize AudioTrack
             player = AudioTrackPlayer(config.sampleRate, config.channels).apply {
                 setVolume(currentVolume)
                 play()
             }
 
-            // 3. Audio Streaming Loop
-            // Chunk size: 20ms of audio (sampleRate * channels * 2 bytes / 50)
             val chunkSize = (config.sampleRate * config.channels * 2 / 50).coerceIn(1024, 8192)
             val buffer = ByteArray(chunkSize)
 
@@ -193,20 +211,16 @@ class AudioReceiverService : Service() {
 
             while (scope.isActive && !client.isClosed) {
                 val bytesRead = inputStream.read(buffer, 0, buffer.size)
-                if (bytesRead == -1) {
-                    Log.d(TAG, "Stream ended by client")
-                    break
-                }
+                if (bytesRead == -1) break
 
                 player?.write(buffer, 0, bytesRead)
-
                 totalBytes += bytesRead
                 bytesInWindow += bytesRead
 
                 val now = System.currentTimeMillis()
                 val elapsed = now - lastStatsTime
                 if (elapsed >= 1000) {
-                    val rate = (bytesInWindow * 1000) / (elapsed * 1024) // KB/s
+                    val rate = (bytesInWindow * 1000) / (elapsed * 1024)
                     _stateFlow.value = _stateFlow.value.copy(
                         totalBytesReceived = totalBytes,
                         bytesPerSecond = rate
@@ -216,9 +230,94 @@ class AudioReceiverService : Service() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during audio stream read/playback", e)
+            Log.e(TAG, "Speaker client error", e)
         } finally {
             closeQuietly(inputStream)
+            closeQuietly(client)
+        }
+    }
+
+    // --- MICROPHONE TRANSMITTER LOOP ---
+    private suspend fun runMicServerLoop(port: Int) {
+        try {
+            micServerSocket = ServerSocket(port).apply { reuseAddress = true }
+            Log.d(TAG, "Mic ServerSocket listening on port $port")
+
+            while (scope.isActive && micServerSocket != null && !micServerSocket!!.isClosed) {
+                _stateFlow.value = _stateFlow.value.copy(isMicConnected = false)
+                updateNotification()
+
+                val client = try {
+                    micServerSocket!!.accept()
+                } catch (e: SocketException) {
+                    break
+                }
+
+                client.tcpNoDelay = true
+                client.sendBufferSize = 65536
+                currentMicClientSocket = client
+
+                _stateFlow.value = _stateFlow.value.copy(isMicConnected = true)
+                updateNotification()
+
+                handleMicClientStream(client)
+
+                currentMicClientSocket = null
+                micSource?.release()
+                micSource = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Mic server error", e)
+        } finally {
+            closeQuietly(micServerSocket)
+            micServerSocket = null
+        }
+    }
+
+    private fun handleMicClientStream(client: Socket) {
+        var outputStream: OutputStream? = null
+        try {
+            outputStream = client.getOutputStream()
+
+            // Send 16-byte ADBMIC header
+            val header = AdbProtocol.createMicHeader(sampleRate = 48000, channels = 1)
+            outputStream.write(header)
+            outputStream.flush()
+
+            micSource = AudioRecordSource(sampleRate = 48000, channels = 1)
+            if (!micSource!!.start()) {
+                Log.e(TAG, "Failed to start AudioRecordSource")
+                return
+            }
+
+            val chunkSize = 960 * 2 // 20ms of mono 16-bit PCM = 1920 bytes
+            val buffer = ByteArray(chunkSize)
+            var totalSent: Long = 0
+
+            while (scope.isActive && !client.isClosed) {
+                val readCount = micSource!!.read(buffer, 0, buffer.size)
+                if (readCount > 0) {
+                    outputStream.write(buffer, 0, readCount)
+                    totalSent += readCount
+
+                    // Calculate RMS level for UI
+                    var sum = 0.0
+                    val sampleCount = readCount / 2
+                    for (i in 0 until sampleCount) {
+                        val sample = (buffer[i * 2 + 1].toInt() shl 8) or (buffer[i * 2].toInt() and 0xFF)
+                        sum += sample * sample
+                    }
+                    val rms = (sqrt(sum / sampleCount) / 32768.0).toFloat().coerceIn(0.0f, 1.0f)
+                    _stateFlow.value = _stateFlow.value.copy(
+                        totalBytesSent = totalSent,
+                        micRmsLevel = rms
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Mic stream exception", e)
+        } finally {
+            closeQuietly(outputStream)
             closeQuietly(client)
         }
     }
@@ -228,18 +327,30 @@ class AudioReceiverService : Service() {
         player?.setVolume(volume)
     }
 
-    fun stopListening() {
-        serverJob?.cancel()
-        serverJob = null
+    fun stopAllStreams() {
+        speakerServerJob?.cancel()
+        speakerServerJob = null
 
-        closeQuietly(currentClientSocket)
-        currentClientSocket = null
+        micServerJob?.cancel()
+        micServerJob = null
 
-        closeQuietly(serverSocket)
-        serverSocket = null
+        closeQuietly(currentSpeakerClientSocket)
+        currentSpeakerClientSocket = null
+
+        closeQuietly(currentMicClientSocket)
+        currentMicClientSocket = null
+
+        closeQuietly(speakerServerSocket)
+        speakerServerSocket = null
+
+        closeQuietly(micServerSocket)
+        micServerSocket = null
 
         player?.release()
         player = null
+
+        micSource?.release()
+        micSource = null
 
         if (wakeLock?.isHeld == true) {
             try {
@@ -249,12 +360,12 @@ class AudioReceiverService : Service() {
             }
         }
 
-        _stateFlow.value = ServiceState(isRunning = false, isClientConnected = false)
+        _stateFlow.value = ServiceState(isRunning = false)
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onDestroy() {
-        stopListening()
+        stopAllStreams()
         super.onDestroy()
     }
 
@@ -271,7 +382,7 @@ class AudioReceiverService : Service() {
                 getString(R.string.notification_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "ADBSound playback notification"
+                description = "Sonopipe audio service"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -297,7 +408,7 @@ class AudioReceiverService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.notification_title))
+            .setContentTitle("Sonopipe Audio Service")
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_speaker)
             .setContentIntent(pendingIntent)
@@ -307,7 +418,12 @@ class AudioReceiverService : Service() {
             .build()
     }
 
-    private fun updateNotification(text: String) {
+    private fun updateNotification() {
+        val text = when (_stateFlow.value.mode) {
+            MODE_MIC -> "Microphone active (Port ${_stateFlow.value.micPort})"
+            MODE_DUPLEX -> "Duplex headset active (Speaker & Mic)"
+            else -> "Speaker active (Port ${_stateFlow.value.port})"
+        }
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(text))
     }

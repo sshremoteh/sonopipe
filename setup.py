@@ -11,6 +11,8 @@ setup(
         "soundcard>=0.4.6",
         "PySide6>=6.5.0",
         "numpy>=1.20.0",
+        "qrcode>=8.0.0",
+        "pillow>=9.0.0",
     ],
     entry_points={
         "console_scripts": [

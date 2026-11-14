@@ -12,6 +12,7 @@ from sonopipe.adb.manager import AdbManager
 from sonopipe.capture.factory import list_audio_devices, get_default_backend_name
 from sonopipe.stream.sender import AudioStreamer
 from sonopipe.stream.protocol import DEFAULT_PORT, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS
+from sonopipe.mic.receiver import MicReceiver, DEFAULT_MIC_PORT
 
 
 def format_vu_meter(level: float, width: int = 20) -> str:
@@ -112,87 +113,140 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"[Error] Failed to connect wirelessly: {msg}", file=sys.stderr)
             return 1
 
-    # Check ADB installation
+    mode = getattr(args, "mode", "speaker")
+    target_device = None
+
+    # Check ADB installation & Setup port forwards
     if not args.no_forward:
         if not adb.is_available():
             print("[Warning] ADB not found in PATH. Continuing without automatic port forwarding.", file=sys.stderr)
         else:
             adb_devices = adb.list_devices()
-            target_device = None
             if args.device:
                 target_device = args.device
             elif adb_devices:
-                # pick first active device
                 active_devs = [d for d in adb_devices if d.state == "device"]
                 if active_devs:
                     target_device = active_devs[0].serial
 
-            print(f"[ADB] Setting up port forward tcp:{args.port} -> tcp:{args.port} (device: {target_device or 'default'})")
-            success = adb.forward_port(local_port=args.port, remote_port=args.port, serial=target_device)
-            if not success:
-                print(f"[Warning] Failed to run adb forward. Make sure phone is connected via USB with USB debugging enabled.", file=sys.stderr)
+            if mode in ("speaker", "duplex"):
+                print(f"[ADB] Setting up speaker port forward tcp:{args.port} -> tcp:{args.port} (device: {target_device or 'default'})")
+                adb.forward_port(local_port=args.port, remote_port=args.port, serial=target_device)
+
+            if mode in ("mic", "duplex"):
+                mic_port = getattr(args, "mic_port", DEFAULT_MIC_PORT)
+                print(f"[ADB] Setting up mic port forward tcp:{mic_port} -> tcp:{mic_port} (device: {target_device or 'default'})")
+                adb.forward_port(local_port=mic_port, remote_port=mic_port, serial=target_device)
 
     print(f"\n==========================================")
     print(f"    Sonopipe Audio Streaming (CLI)")
     print(f"==========================================")
-    print(f"Target:       127.0.0.1:{args.port}")
-    print(f"Sample Rate:  {args.rate} Hz")
-    print(f"Channels:     {'Stereo' if args.channels == 2 else 'Mono'}")
-    print(f"Backend:      {args.backend or get_default_backend_name()}")
-    print(f"Volume:       {int(args.volume * 100)}%")
-    print(f"Audio Source: {args.audio_device or 'Default Output'}")
+    print(f"Mode:         {mode.upper()}")
+    if mode in ("speaker", "duplex"):
+        print(f"Speaker Port: 127.0.0.1:{args.port}")
+        print(f"Sample Rate:  {args.rate} Hz")
+        print(f"Channels:     {'Stereo' if args.channels == 2 else 'Mono'}")
+        print(f"Backend:      {args.backend or get_default_backend_name()}")
+        print(f"Volume:       {int(args.volume * 100)}%")
+        print(f"Audio Source: {args.audio_device or 'Default Output'}")
+    if mode in ("mic", "duplex"):
+        mic_port = getattr(args, "mic_port", DEFAULT_MIC_PORT)
+        mic_gain = getattr(args, "mic_gain", 1.0)
+        print(f"Mic Port:     127.0.0.1:{mic_port}")
+        print(f"Mic Gain:     {int(mic_gain * 100)}%")
     print(f"Press Ctrl+C to stop streaming.\n")
 
-    latest_stats = {"bytes_sent": 0, "kb_per_sec": 0.0, "rms_level": 0.0, "peak_level": 0.0, "uptime": 0.0}
-
-    def on_stats(stats: dict):
-        nonlocal latest_stats
-        latest_stats = stats
-
+    speaker_stats = {"bytes_sent": 0, "kb_per_sec": 0.0, "rms_level": 0.0, "peak_level": 0.0, "uptime": 0.0}
+    mic_stats = {"mic_bytes": 0, "mic_kb_per_sec": 0.0, "mic_rms": 0.0, "mic_peak": 0.0}
     error_occurred = False
+
+    def on_speaker_stats(stats: dict):
+        nonlocal speaker_stats
+        speaker_stats = stats
+
+    def on_mic_stats(stats: dict):
+        nonlocal mic_stats
+        mic_stats = stats
 
     def on_error(err: str):
         nonlocal error_occurred
         error_occurred = True
         print(f"\n[Stream Error] {err}", file=sys.stderr)
 
-    streamer = AudioStreamer(
-        host="127.0.0.1",
-        port=args.port,
-        sample_rate=args.rate,
-        channels=args.channels,
-        chunk_frames=args.chunk_size,
-        volume=args.volume,
-        backend=args.backend,
-        audio_device_id=args.audio_device,
-        on_stats_update=on_stats,
-        on_error=on_error,
-    )
+    streamer: Optional[AudioStreamer] = None
+    mic_receiver: Optional[MicReceiver] = None
+
+    if mode in ("speaker", "duplex"):
+        streamer = AudioStreamer(
+            host="127.0.0.1",
+            port=args.port,
+            sample_rate=args.rate,
+            channels=args.channels,
+            chunk_frames=args.chunk_size,
+            volume=args.volume,
+            backend=args.backend,
+            audio_device_id=args.audio_device,
+            on_stats_update=on_speaker_stats,
+            on_error=on_error,
+        )
+
+    if mode in ("mic", "duplex"):
+        mic_port = getattr(args, "mic_port", DEFAULT_MIC_PORT)
+        mic_gain = getattr(args, "mic_gain", 1.0)
+        mic_receiver = MicReceiver(
+            host="127.0.0.1",
+            port=mic_port,
+            gain=mic_gain,
+            on_stats_update=on_mic_stats,
+            on_error=on_error,
+        )
 
     def signal_handler(sig, frame):
         print("\nStopping audio stream...")
-        streamer.stop()
+        if streamer:
+            streamer.stop()
+        if mic_receiver:
+            mic_receiver.stop()
         if not args.no_forward and adb.is_available():
-            adb.remove_forward(local_port=args.port, serial=args.device)
+            if mode in ("speaker", "duplex"):
+                adb.remove_forward(local_port=args.port, serial=target_device)
+            if mode in ("mic", "duplex"):
+                adb.remove_forward(local_port=getattr(args, "mic_port", DEFAULT_MIC_PORT), serial=target_device)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        streamer.start()
+        if streamer:
+            streamer.start()
+        if mic_receiver:
+            mic_receiver.start()
     except Exception as e:
         print(f"[Fatal] Failed to start stream: {e}", file=sys.stderr)
         return 1
 
+    start_time = time.time()
+
     # Status refresh loop
-    while streamer.is_running and not error_occurred:
+    while not error_occurred:
+        is_spk_active = streamer and streamer.is_running
+        is_mic_active = mic_receiver and mic_receiver.is_running
+        if not is_spk_active and not is_mic_active:
+            break
+
         time.sleep(0.3)
-        mb = latest_stats["bytes_sent"] / (1024.0 * 1024.0)
-        vu = format_vu_meter(latest_stats["rms_level"])
-        rate = latest_stats["kb_per_sec"]
-        uptime = int(latest_stats["uptime"])
-        sys.stdout.write(f"\r  Streaming: {vu}  Rate: {rate:6.1f} KB/s  Total: {mb:5.1f} MB  Time: {uptime:02d}s ")
+        parts = []
+        if streamer and streamer.is_running:
+            vu_spk = format_vu_meter(speaker_stats["rms_level"], width=10)
+            parts.append(f"Spk: {vu_spk} {speaker_stats['kb_per_sec']:5.1f}KB/s")
+        if mic_receiver and mic_receiver.is_running:
+            vu_mic = format_vu_meter(mic_stats.get("mic_rms", 0.0), width=10)
+            parts.append(f"Mic: {vu_mic} {mic_stats.get('mic_kb_per_sec', 0.0):5.1f}KB/s")
+
+        uptime = int(time.time() - start_time)
+        status_line = " | ".join(parts) + f" | Time: {uptime:02d}s"
+        sys.stdout.write(f"\r  {status_line} ")
         sys.stdout.flush()
 
     if error_occurred:

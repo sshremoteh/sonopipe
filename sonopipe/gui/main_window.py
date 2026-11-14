@@ -1,15 +1,16 @@
 """
 Sonopipe v1.2.0 — Material Design 3 (MD3) Desktop GUI.
 Features:
+- Full Duplex Audio: Speaker (PC → Phone), Microphone (Phone → PC), or Both simultaneously!
+- Native PipeWire/PulseAudio Virtual Microphone with live Mic VU meter
 - USB & Wireless ADB (Wi-Fi) modes with one-click setup & pairing
-- Built-in interactive Wireless Connection Guide
+- QR Code Wireless ADB Pairing Dialog (Android 11+ system & LAN connect)
+- Interactive Wireless Connection Guide
 - Scrollable responsive layout (no clipping on any display/window size)
 - MD3 Dark elevation surfaces and tokens
 - Animated breathing live status badge
 - Hardware-grade dual-channel stereo VU meter with peak hold decay
 - MD3 Segmented latency buttons
-- Fluid master volume slider with quick mute
-- Instant telemetry tiles
 - Settings persistence (QSettings)
 """
 
@@ -26,7 +27,6 @@ from PySide6.QtGui import (
     QBrush,
     QPen,
     QLinearGradient,
-    QPainterPath,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -53,13 +53,20 @@ from PySide6.QtWidgets import (
 
 from sonopipe.adb.manager import AdbManager
 from sonopipe.adb.installer import install_and_launch
+from sonopipe.adb.qr_dialog import WirelessQrDialog
 from sonopipe.capture.factory import list_audio_devices, get_default_backend_name
 from sonopipe.stream.sender import AudioStreamer
+from sonopipe.mic.receiver import MicReceiver, DEFAULT_MIC_PORT
 from sonopipe.stream.protocol import DEFAULT_PORT
+
+MODE_SPEAKER = 0
+MODE_MIC = 1
+MODE_DUPLEX = 2
 
 
 class StreamerSignals(QObject):
     stats_updated = Signal(dict)
+    mic_stats_updated = Signal(dict)
     error_occurred = Signal(str)
 
 
@@ -124,18 +131,17 @@ class WirelessGuideDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        # Header
         h_lbl = QLabel("📶 How to connect via Wireless ADB")
         h_lbl.setFont(QFont("sans-serif", 15, QFont.Bold))
         h_lbl.setStyleSheet("color: #F8FAFC;")
         layout.addWidget(h_lbl)
 
-        sub = QLabel("Stream sound to your phone wirelessly over the local Wi-Fi network without a USB cable.")
+        sub = QLabel("Stream sound and microphone wirelessly over the local Wi-Fi network without a USB cable.")
         sub.setStyleSheet("color: #94A3B8; font-size: 12px;")
         layout.addWidget(sub)
 
         # Method 1
-        g1 = QGroupBox("Method 1: One-Click via USB Cable (Easiest & Recommended)")
+        g1 = QGroupBox("Method 1: One-Click via USB Cable (Recommended)")
         l1 = QVBoxLayout(g1)
         l1.setSpacing(6)
         l1.addWidget(QLabel("1. Connect your phone via USB cable with USB Debugging enabled."))
@@ -145,13 +151,13 @@ class WirelessGuideDialog(QDialog):
         layout.addWidget(g1)
 
         # Method 2
-        g2 = QGroupBox("Method 2: Android 11+ Wireless Debugging (No USB Cable)")
+        g2 = QGroupBox("Method 2: QR Code / Pairing Code (No Cable)")
         l2 = QVBoxLayout(g2)
         l2.setSpacing(6)
         l2.addWidget(QLabel("1. On Phone: Settings → Developer options → enable Wireless debugging."))
-        l2.addWidget(QLabel("2. Tap 'Pair device with pairing code'. Note the IP, Port and 6-digit code."))
-        l2.addWidget(QLabel("3. In Sonopipe: Click '🔑 Pair Code (Android 11+)' and enter pairing info."))
-        l2.addWidget(QLabel("4. Then enter the main Wireless debugging IP:Port and click 'Connect Wi-Fi'."))
+        l2.addWidget(QLabel("2. Click '📷 QR Code Pairing' in Sonopipe and scan the QR with your phone."))
+        l2.addWidget(QLabel("3. Or tap 'Pair device with pairing code' on phone and click '🔑 Pair (Android 11+)'.\n   Enter the pairing port and 6-digit code."))
+        l2.addWidget(QLabel("4. Then click 'Connect Wi-Fi' to start."))
         layout.addWidget(g2)
 
         # Method 3
@@ -274,13 +280,13 @@ class AnimatedStatusBadge(QWidget):
         self._text = "○ DISCONNECTED"
 
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(40)  # ~25 FPS
+        self._anim_timer.setInterval(40)
         self._anim_timer.timeout.connect(self._step_animation)
 
-    def set_streaming(self, streaming: bool):
+    def set_streaming(self, streaming: bool, mode_text: str = "LIVE"):
         self._is_streaming = streaming
         if streaming:
-            self._text = "● LIVE STREAMING"
+            self._text = f"● {mode_text.upper()}"
             self._glow_phase = 0.0
             if not self._anim_timer.isActive():
                 self._anim_timer.start()
@@ -347,10 +353,12 @@ class StereoVuMeterWidget(QWidget):
     rounded segment styling, and dB-scale markings.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, is_mono: bool = False, label_text: str = "STEREO OUT"):
         super().__init__(parent)
-        self.setMinimumHeight(52)
-        self.setMaximumHeight(58)
+        self.is_mono = is_mono
+        self.label_text = label_text
+        self.setMinimumHeight(38 if is_mono else 52)
+        self.setMaximumHeight(44 if is_mono else 58)
 
         self._l_rms = 0.0
         self._r_rms = 0.0
@@ -365,7 +373,7 @@ class StereoVuMeterWidget(QWidget):
         self._decay_timer.timeout.connect(self._decay_peaks)
         self._decay_timer.start()
 
-    def set_levels(self, l_rms: float, r_rms: float, l_peak: float, r_peak: float):
+    def set_levels(self, l_rms: float, r_rms: float = 0.0, l_peak: float = 0.0, r_peak: float = 0.0):
         self._l_rms = max(0.0, min(1.0, l_rms))
         self._r_rms = max(0.0, min(1.0, r_rms))
         self._l_peak = max(0.0, min(1.0, l_peak))
@@ -400,10 +408,10 @@ class StereoVuMeterWidget(QWidget):
         label_w = 20
         bar_x = label_w + 6
         bar_w = max(50, w - bar_x - 10)
-        bar_h = 11
-        gap = 7
+        bar_h = 10
+        gap = 6
 
-        db_y = 11
+        db_y = 10
         painter.setFont(QFont("monospace", 8))
         painter.setPen(QColor("#64748B"))
         scale_points = [
@@ -418,11 +426,14 @@ class StereoVuMeterWidget(QWidget):
             txt = f"{db_val}dB" if db_val != 0 else "0dB"
             painter.drawText(x_pos - 12, db_y, txt)
 
-        l_y = 17
-        self._draw_bar(painter, "L", bar_x, l_y, bar_w, bar_h, self._l_rms, self._l_peak_hold)
-
-        r_y = l_y + bar_h + gap
-        self._draw_bar(painter, "R", bar_x, r_y, bar_w, bar_h, self._r_rms, self._r_peak_hold)
+        if self.is_mono:
+            y = 16
+            self._draw_bar(painter, "M", bar_x, y, bar_w, bar_h, self._l_rms, self._l_peak_hold)
+        else:
+            l_y = 16
+            self._draw_bar(painter, "L", bar_x, l_y, bar_w, bar_h, self._l_rms, self._l_peak_hold)
+            r_y = l_y + bar_h + gap
+            self._draw_bar(painter, "R", bar_x, r_y, bar_w, bar_h, self._r_rms, self._r_peak_hold)
 
     def _draw_bar(self, painter: QPainter, label: str, x: int, y: int, w: int, h: int, rms: float, peak_hold: float):
         painter.setFont(QFont("sans-serif", 9, QFont.Bold))
@@ -454,21 +465,27 @@ class StereoVuMeterWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sonopipe v1.2.0 — PC Audio to Android Speaker")
-        self.resize(540, 750)
-        self.setMinimumSize(440, 480)
+        self.setWindowTitle("Sonopipe v1.2.0 — PC Audio & Microphone over ADB")
+        self.resize(550, 780)
+        self.setMinimumSize(460, 500)
 
         self.adb = AdbManager()
         self.streamer: Optional[AudioStreamer] = None
+        self.mic_receiver: Optional[MicReceiver] = None
+
         self.signals = StreamerSignals()
         self.signals.stats_updated.connect(self._on_stats_updated)
+        self.signals.mic_stats_updated.connect(self._on_mic_stats_updated)
         self.signals.error_occurred.connect(self._on_error_occurred)
 
         self.settings = QSettings("Sonopipe", "Sonopipe")
 
+        self.current_mode = MODE_SPEAKER
         self.chunk_frames = 960
         self.is_muted = False
+        self.is_mic_muted = False
         self.saved_volume = 100
+        self.saved_mic_gain = 100
 
         self._init_ui()
         self._apply_theme()
@@ -513,7 +530,7 @@ class MainWindow(QMainWindow):
         title_row.addStretch()
         brand_col.addLayout(title_row)
 
-        sub_lbl = QLabel("Lossless low-latency sound over USB & Wireless ADB")
+        sub_lbl = QLabel("Speaker & Microphone over USB / Wi-Fi ADB")
         sub_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
         brand_col.addWidget(sub_lbl)
         header_row.addLayout(brand_col)
@@ -524,13 +541,39 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self.status_badge)
         main_layout.addLayout(header_row)
 
-        # 2. CARD: ANDROID CONNECTION (USB & WIRELESS ADB)
+        # 2. AUDIO STREAMING DIRECTION MODE (Segmented Capsule)
+        mode_box = self._create_card("🎧  Audio Direction Mode")
+        mode_layout = QHBoxLayout(mode_box)
+        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setSpacing(6)
+
+        self.btn_dir_speaker = QPushButton("🔊  Speaker (PC → Phone)")
+        self.btn_dir_speaker.setCheckable(True)
+        self.btn_dir_speaker.setChecked(True)
+        mode_layout.addWidget(self.btn_dir_speaker)
+
+        self.btn_dir_mic = QPushButton("🎙  Microphone (Phone → PC)")
+        self.btn_dir_mic.setCheckable(True)
+        mode_layout.addWidget(self.btn_dir_mic)
+
+        self.btn_dir_duplex = QPushButton("🎧  Full Duplex (Both)")
+        self.btn_dir_duplex.setCheckable(True)
+        mode_layout.addWidget(self.btn_dir_duplex)
+
+        dir_group = QButtonGroup(self)
+        dir_group.addButton(self.btn_dir_speaker, MODE_SPEAKER)
+        dir_group.addButton(self.btn_dir_mic, MODE_MIC)
+        dir_group.addButton(self.btn_dir_duplex, MODE_DUPLEX)
+        dir_group.idClicked.connect(self._on_mode_changed)
+
+        main_layout.addWidget(mode_box)
+
+        # 3. CARD: ANDROID CONNECTION (USB & WIRELESS ADB)
         conn_card = self._create_card("📱  Android Connection (USB / Wireless Wi-Fi)")
         conn_layout = QVBoxLayout(conn_card)
         conn_layout.setContentsMargins(14, 14, 14, 14)
         conn_layout.setSpacing(12)
 
-        # Transport Segmented Mode Selector
         mode_row = QHBoxLayout()
         mode_row.setSpacing(6)
         self.btn_mode_usb = QPushButton("🔌  USB Cable")
@@ -542,18 +585,17 @@ class MainWindow(QMainWindow):
         self.btn_mode_wifi.setCheckable(True)
         mode_row.addWidget(self.btn_mode_wifi)
 
-        mode_group = QButtonGroup(self)
-        mode_group.addButton(self.btn_mode_usb)
-        mode_group.addButton(self.btn_mode_wifi)
+        trans_group = QButtonGroup(self)
+        trans_group.addButton(self.btn_mode_usb)
+        trans_group.addButton(self.btn_mode_wifi)
         self.btn_mode_usb.clicked.connect(lambda: self.conn_stack.setCurrentIndex(0))
         self.btn_mode_wifi.clicked.connect(lambda: self.conn_stack.setCurrentIndex(1))
 
         conn_layout.addLayout(mode_row)
 
-        # Stacked Panel for USB vs Wireless controls
         self.conn_stack = QStackedWidget()
 
-        # --- SUB-PANEL 0: USB MODE ---
+        # SUB-PANEL 0: USB
         usb_widget = QWidget()
         usb_grid = QGridLayout(usb_widget)
         usb_grid.setContentsMargins(0, 4, 0, 0)
@@ -568,7 +610,6 @@ class MainWindow(QMainWindow):
         self.btn_refresh_devices.clicked.connect(self.refresh_devices)
         usb_grid.addWidget(self.btn_refresh_devices, 0, 2)
 
-        # Helper to convert USB connection to Wireless in 1 click
         self.btn_usb_to_wifi = QPushButton("⚡ Switch to Wi-Fi via USB (Auto-Setup)")
         self.btn_usb_to_wifi.setToolTip("Auto-detect phone's Wi-Fi IP, enable TCP/IP port 5555, and connect wirelessly")
         self.btn_usb_to_wifi.setStyleSheet(
@@ -579,7 +620,7 @@ class MainWindow(QMainWindow):
 
         self.conn_stack.addWidget(usb_widget)
 
-        # --- SUB-PANEL 1: WIRELESS ADB MODE ---
+        # SUB-PANEL 1: WIRELESS ADB
         wifi_widget = QWidget()
         wifi_grid = QGridLayout(wifi_widget)
         wifi_grid.setContentsMargins(0, 4, 0, 0)
@@ -600,7 +641,7 @@ class MainWindow(QMainWindow):
         btn_wifi_row = QHBoxLayout()
         btn_wifi_row.setSpacing(6)
 
-        self.btn_wifi_connect = QPushButton("📶 Connect Wi-Fi")
+        self.btn_wifi_connect = QPushButton("📶 Connect")
         self.btn_wifi_connect.setStyleSheet("background-color: #065F46; color: #6EE7B7; font-weight: bold;")
         self.btn_wifi_connect.clicked.connect(self._connect_wireless_adb)
         btn_wifi_row.addWidget(self.btn_wifi_connect)
@@ -609,13 +650,18 @@ class MainWindow(QMainWindow):
         self.btn_wifi_disconnect.clicked.connect(self._disconnect_wireless_adb)
         btn_wifi_row.addWidget(self.btn_wifi_disconnect)
 
-        self.btn_wifi_pair = QPushButton("🔑 Pair (Android 11+)")
-        self.btn_wifi_pair.setToolTip("Pair with phone using 6-digit wireless pairing code")
+        self.btn_wifi_qr = QPushButton("📷 QR Pair")
+        self.btn_wifi_qr.setToolTip("Show QR code for Android 11+ pairing or LAN connect")
+        self.btn_wifi_qr.setStyleSheet("background-color: #1E293B; color: #38BDF8; font-weight: bold;")
+        self.btn_wifi_qr.clicked.connect(self._open_qr_dialog)
+        btn_wifi_row.addWidget(self.btn_wifi_qr)
+
+        self.btn_wifi_pair = QPushButton("🔑 Code")
+        self.btn_wifi_pair.setToolTip("Pair using 6-digit wireless pairing code")
         self.btn_wifi_pair.clicked.connect(self._open_pair_dialog)
         btn_wifi_row.addWidget(self.btn_wifi_pair)
 
         self.btn_wifi_guide = QPushButton("📖 Guide")
-        self.btn_wifi_guide.setToolTip("Step-by-step wireless connection instructions")
         self.btn_wifi_guide.clicked.connect(self._open_wireless_guide)
         btn_wifi_row.addWidget(self.btn_wifi_guide)
 
@@ -624,26 +670,31 @@ class MainWindow(QMainWindow):
         self.conn_stack.addWidget(wifi_widget)
         conn_layout.addWidget(self.conn_stack)
 
-        # Port & Quick Commands (Common to both modes)
+        # Port row
         port_row = QHBoxLayout()
         port_row.setSpacing(8)
-        port_row.addWidget(self._make_field_label("Audio Stream Port:"))
+        port_row.addWidget(self._make_field_label("Ports: Spk:"))
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1024, 65535)
         self.port_spin.setValue(DEFAULT_PORT)
-        self.port_spin.setFixedWidth(85)
+        self.port_spin.setFixedWidth(75)
         port_row.addWidget(self.port_spin)
 
+        port_row.addWidget(self._make_field_label("Mic:"))
+        self.mic_port_spin = QSpinBox()
+        self.mic_port_spin.setRange(1024, 65535)
+        self.mic_port_spin.setValue(DEFAULT_MIC_PORT)
+        self.mic_port_spin.setFixedWidth(75)
+        port_row.addWidget(self.mic_port_spin)
+
         self.btn_copy_cmd = QPushButton("📋 Copy Forward Command")
-        self.btn_copy_cmd.setToolTip("Copy 'adb forward tcp:PORT tcp:PORT' to clipboard")
         self.btn_copy_cmd.clicked.connect(self._copy_forward_command)
         port_row.addWidget(self.btn_copy_cmd)
         port_row.addStretch()
 
         conn_layout.addLayout(port_row)
 
-        # APK Install Button
         self.btn_install_apk = QPushButton("📲  Install & Launch APK on Phone")
         self.btn_install_apk.setToolTip("Install the mobile receiver app directly via ADB")
         self.btn_install_apk.setStyleSheet(
@@ -655,9 +706,9 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(conn_card)
 
-        # 3. CARD: AUDIO CAPTURE ENGINE
-        audio_card = self._create_card("🔊  System Audio Engine")
-        audio_layout = QGridLayout(audio_card)
+        # 4. CARD: SPEAKER (PC AUDIO CAPTURE)
+        self.audio_card = self._create_card("🔊  System Audio Engine (Speaker Out)")
+        audio_layout = QGridLayout(self.audio_card)
         audio_layout.setContentsMargins(14, 14, 14, 14)
         audio_layout.setSpacing(10)
 
@@ -678,13 +729,11 @@ class MainWindow(QMainWindow):
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         audio_layout.addWidget(self.backend_combo, 1, 1, 1, 2)
 
-        # MD3 Segmented Latency Presets
         audio_layout.addWidget(self._make_field_label("Latency Mode:"), 2, 0)
         preset_row = QHBoxLayout()
         preset_row.setSpacing(6)
 
         self.preset_group = QButtonGroup(self)
-
         self.btn_p10 = QPushButton("⚡ Low (10ms)")
         self.btn_p10.setCheckable(True)
         self.preset_group.addButton(self.btn_p10, 480)
@@ -704,11 +753,11 @@ class MainWindow(QMainWindow):
         self.preset_group.idClicked.connect(self._on_preset_changed)
         audio_layout.addLayout(preset_row, 2, 1, 1, 2)
 
-        main_layout.addWidget(audio_card)
+        main_layout.addWidget(self.audio_card)
 
-        # 4. CARD: OUTPUT VOLUME & STEREO VU METER
-        vol_card = self._create_card("🎚  Master Output & Stereo Levels")
-        vol_layout = QVBoxLayout(vol_card)
+        # 5. CARD: SPEAKER VOLUME & STEREO VU METER
+        self.vol_card = self._create_card("🎚  Speaker Volume & Output Levels")
+        vol_layout = QVBoxLayout(self.vol_card)
         vol_layout.setContentsMargins(14, 14, 14, 14)
         vol_layout.setSpacing(10)
 
@@ -732,15 +781,52 @@ class MainWindow(QMainWindow):
         self.lbl_volume.setFont(QFont("monospace", 10, QFont.Bold))
         self.lbl_volume.setStyleSheet("color: #F8FAFC;")
         vol_row.addWidget(self.lbl_volume)
-
         vol_layout.addLayout(vol_row)
 
         self.meter_widget = StereoVuMeterWidget()
         vol_layout.addWidget(self.meter_widget)
 
-        main_layout.addWidget(vol_card)
+        main_layout.addWidget(self.vol_card)
 
-        # 5. CARD: LIVE TELEMETRY TILES
+        # 6. CARD: MICROPHONE INPUT & LEVELS
+        self.mic_card = self._create_card("🎙  Phone Microphone (Input to PC)")
+        mic_layout = QVBoxLayout(self.mic_card)
+        mic_layout.setContentsMargins(14, 14, 14, 14)
+        mic_layout.setSpacing(10)
+
+        mic_row = QHBoxLayout()
+        mic_row.setSpacing(10)
+
+        self.btn_mic_mute = QPushButton("🎙")
+        self.btn_mic_mute.setFixedSize(36, 32)
+        self.btn_mic_mute.setToolTip("Mute Microphone")
+        self.btn_mic_mute.clicked.connect(self._toggle_mic_mute)
+        mic_row.addWidget(self.btn_mic_mute)
+
+        self.mic_gain_slider = QSlider(Qt.Horizontal)
+        self.mic_gain_slider.setRange(0, 200)
+        self.mic_gain_slider.setValue(100)
+        self.mic_gain_slider.valueChanged.connect(self._on_mic_gain_changed)
+        mic_row.addWidget(self.mic_gain_slider)
+
+        self.lbl_mic_gain = QLabel("100%")
+        self.lbl_mic_gain.setFixedWidth(48)
+        self.lbl_mic_gain.setFont(QFont("monospace", 10, QFont.Bold))
+        self.lbl_mic_gain.setStyleSheet("color: #F8FAFC;")
+        mic_row.addWidget(self.lbl_mic_gain)
+        mic_layout.addLayout(mic_row)
+
+        # Mic Live VU Meter
+        self.mic_meter_widget = StereoVuMeterWidget(is_mono=True, label_text="MIC IN")
+        mic_layout.addWidget(self.mic_meter_widget)
+
+        mic_info = QLabel("Virtual Device: sonopipe_mic_sink.monitor (Native PipeWire / PulseAudio)")
+        mic_info.setStyleSheet("color: #64748B; font-size: 11px;")
+        mic_layout.addWidget(mic_info)
+
+        main_layout.addWidget(self.mic_card)
+
+        # 7. CARD: LIVE TELEMETRY TILES
         telemetry_frame = QFrame()
         telemetry_frame.setStyleSheet(
             "background-color: #14171E; border: 1px solid #232732; border-radius: 10px;"
@@ -775,7 +861,7 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(telemetry_frame)
 
-        # 6. ACTION BUTTON (START / STOP STREAMING) - Stadium Capsule
+        # 8. ACTION BUTTON (START / STOP STREAMING)
         self.btn_toggle = QPushButton("▶   START STREAMING")
         self.btn_toggle.setFixedHeight(54)
         self.btn_toggle.setFont(QFont("sans-serif", 14, QFont.Bold))
@@ -906,9 +992,16 @@ class MainWindow(QMainWindow):
         saved_port = self.settings.value("port", DEFAULT_PORT, type=int)
         self.port_spin.setValue(saved_port)
 
+        saved_mic_port = self.settings.value("mic_port", DEFAULT_MIC_PORT, type=int)
+        self.mic_port_spin.setValue(saved_mic_port)
+
         saved_vol = self.settings.value("volume", 100, type=int)
         self.vol_slider.setValue(saved_vol)
         self._on_volume_changed(saved_vol)
+
+        saved_gain = self.settings.value("mic_gain", 100, type=int)
+        self.mic_gain_slider.setValue(saved_gain)
+        self._on_mic_gain_changed(saved_gain)
 
         saved_ip = self.settings.value("wifi_ip", "", type=str)
         if saved_ip:
@@ -925,11 +1018,41 @@ class MainWindow(QMainWindow):
             self.btn_p20.setChecked(True)
             self._on_preset_changed(960)
 
+        saved_mode = self.settings.value("mode", MODE_SPEAKER, type=int)
+        if saved_mode == MODE_MIC:
+            self.btn_dir_mic.setChecked(True)
+        elif saved_mode == MODE_DUPLEX:
+            self.btn_dir_duplex.setChecked(True)
+        else:
+            self.btn_dir_speaker.setChecked(True)
+        self._on_mode_changed(saved_mode)
+
     def _save_settings(self):
         self.settings.setValue("port", self.port_spin.value())
+        self.settings.setValue("mic_port", self.mic_port_spin.value())
         self.settings.setValue("volume", self.vol_slider.value())
+        self.settings.setValue("mic_gain", self.mic_gain_slider.value())
         self.settings.setValue("preset", self.chunk_frames)
         self.settings.setValue("wifi_ip", self.wifi_ip_input.text().strip())
+        self.settings.setValue("mode", self.current_mode)
+
+    def _on_mode_changed(self, mode_id: int):
+        self.current_mode = mode_id
+        if mode_id == MODE_SPEAKER:
+            self.audio_card.setVisible(True)
+            self.vol_card.setVisible(True)
+            self.mic_card.setVisible(False)
+            self.btn_toggle.setText("▶   START SPEAKER STREAMING")
+        elif mode_id == MODE_MIC:
+            self.audio_card.setVisible(False)
+            self.vol_card.setVisible(False)
+            self.mic_card.setVisible(True)
+            self.btn_toggle.setText("▶   START MICROPHONE STREAMING")
+        else:  # Duplex
+            self.audio_card.setVisible(True)
+            self.vol_card.setVisible(True)
+            self.mic_card.setVisible(True)
+            self.btn_toggle.setText("▶   START DUPLEX HEADSET")
 
     def refresh_devices(self):
         self.device_combo.clear()
@@ -1010,14 +1133,45 @@ class MainWindow(QMainWindow):
         if self.streamer:
             self.streamer.set_volume(value / 100.0)
 
+    def _toggle_mic_mute(self):
+        if self.is_mic_muted:
+            self.is_mic_muted = False
+            self.btn_mic_mute.setText("🎙")
+            self.mic_gain_slider.setValue(self.saved_mic_gain)
+        else:
+            self.is_mic_muted = True
+            self.saved_mic_gain = self.mic_gain_slider.value()
+            self.btn_mic_mute.setText("🔇")
+            self.mic_gain_slider.setValue(0)
+
+    def _on_mic_gain_changed(self, value: int):
+        self.lbl_mic_gain.setText(f"{value}%")
+        if value > 100:
+            self.lbl_mic_gain.setStyleSheet("color: #F59E0B; font-weight: bold;")
+        else:
+            self.lbl_mic_gain.setStyleSheet("color: #F8FAFC; font-weight: bold;")
+
+        if value > 0 and self.is_mic_muted:
+            self.is_mic_muted = False
+            self.btn_mic_mute.setText("🎙")
+
+        if self.mic_receiver:
+            self.mic_receiver.set_gain(value / 100.0)
+
     def _copy_forward_command(self):
         port = self.port_spin.value()
-        cmd = f"adb forward tcp:{port} tcp:{port}"
+        mic_port = self.mic_port_spin.value()
+        if self.current_mode == MODE_MIC:
+            cmd = f"adb forward tcp:{mic_port} tcp:{mic_port}"
+        elif self.current_mode == MODE_DUPLEX:
+            cmd = f"adb forward tcp:{port} tcp:{port} && adb forward tcp:{mic_port} tcp:{mic_port}"
+        else:
+            cmd = f"adb forward tcp:{port} tcp:{port}"
+
         QApplication.clipboard().setText(cmd)
         self.btn_copy_cmd.setText("✓ Copied!")
         QTimer.singleShot(1500, lambda: self.btn_copy_cmd.setText("📋 Copy Forward Command"))
 
-    # Wireless ADB Handlers
     def _auto_switch_usb_to_wifi(self):
         devices = self.adb.list_devices()
         usb_devices = [d for d in devices if ":" not in d.serial and d.state == "device"]
@@ -1090,6 +1244,10 @@ class MainWindow(QMainWindow):
         dlg = WirelessPairDialog(self.adb, default_ip=default_ip, parent=self)
         dlg.exec()
 
+    def _open_qr_dialog(self):
+        dlg = WirelessQrDialog(self.adb, parent=self)
+        dlg.exec()
+
     def _open_wireless_guide(self):
         dlg = WirelessGuideDialog(self)
         dlg.exec()
@@ -1116,66 +1274,78 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Installation", msg)
 
     def toggle_streaming(self):
-        if self.streamer and self.streamer.is_running:
+        is_active = (self.streamer and self.streamer.is_running) or (self.mic_receiver and self.mic_receiver.is_running)
+        if is_active:
             self.stop_streaming()
         else:
             self.start_streaming()
 
     def start_streaming(self):
         port = self.port_spin.value()
+        mic_port = self.mic_port_spin.value()
         selected_serial = self.device_combo.currentData() or None
 
+        # 1. Forward ports via ADB
         if self.adb.is_available():
-            forward_ok = self.adb.forward_port(local_port=port, remote_port=port, serial=selected_serial)
-            if not forward_ok:
-                ans = QMessageBox.question(
-                    self,
-                    "ADB Forward Notice",
-                    f"Could not automatically execute 'adb forward tcp:{port} tcp:{port}'.\n\n"
-                    f"Ensure device is connected and authorized.\n\n"
-                    f"Do you want to continue?",
-                    QMessageBox.Yes | QMessageBox.No,
-                )
-                if ans != QMessageBox.Yes:
-                    return
+            if self.current_mode in (MODE_SPEAKER, MODE_DUPLEX):
+                self.adb.forward_port(local_port=port, remote_port=port, serial=selected_serial)
+            if self.current_mode in (MODE_MIC, MODE_DUPLEX):
+                self.adb.forward_port(local_port=mic_port, remote_port=mic_port, serial=selected_serial)
 
-        backend_idx = self.backend_combo.currentIndex()
-        backend_name = None
-        if backend_idx == 1:
-            backend_name = "pulse"
-        elif backend_idx == 2:
-            backend_name = "wasapi"
-        elif backend_idx == 3:
-            backend_name = "soundcard"
+        # 2. Start Speaker Streamer if active
+        if self.current_mode in (MODE_SPEAKER, MODE_DUPLEX):
+            backend_idx = self.backend_combo.currentIndex()
+            backend_name = None
+            if backend_idx == 1:
+                backend_name = "pulse"
+            elif backend_idx == 2:
+                backend_name = "wasapi"
+            elif backend_idx == 3:
+                backend_name = "soundcard"
 
-        audio_dev_id = self.source_combo.currentData() or None
-        sample_rate = 48000
-        channels = 2
-        vol = self.vol_slider.value() / 100.0
+            audio_dev_id = self.source_combo.currentData() or None
+            vol = self.vol_slider.value() / 100.0
 
-        self.streamer = AudioStreamer(
-            host="127.0.0.1",
-            port=port,
-            sample_rate=sample_rate,
-            channels=channels,
-            chunk_frames=self.chunk_frames,
-            volume=vol,
-            backend=backend_name,
-            audio_device_id=audio_dev_id,
-            on_stats_update=lambda stats: self.signals.stats_updated.emit(stats),
-            on_error=lambda err: self.signals.error_occurred.emit(err),
-        )
+            self.streamer = AudioStreamer(
+                host="127.0.0.1",
+                port=port,
+                sample_rate=48000,
+                channels=2,
+                chunk_frames=self.chunk_frames,
+                volume=vol,
+                backend=backend_name,
+                audio_device_id=audio_dev_id,
+                on_stats_update=lambda stats: self.signals.stats_updated.emit(stats),
+                on_error=lambda err: self.signals.error_occurred.emit(err),
+            )
+            try:
+                self.streamer.start()
+            except Exception as e:
+                QMessageBox.critical(self, "Speaker Error", f"Failed to start speaker stream: {e}")
+                self.stop_streaming()
+                return
 
-        try:
-            self.streamer.start()
-        except Exception as e:
-            QMessageBox.critical(self, "Streaming Error", f"Failed to start stream: {e}")
-            self.stop_streaming()
-            return
+        # 3. Start Microphone Receiver if active
+        if self.current_mode in (MODE_MIC, MODE_DUPLEX):
+            gain = self.mic_gain_slider.value() / 100.0
+            self.mic_receiver = MicReceiver(
+                host="127.0.0.1",
+                port=mic_port,
+                gain=gain,
+                on_stats_update=lambda st: self.signals.mic_stats_updated.emit(st),
+                on_error=lambda err: self.signals.error_occurred.emit(err),
+            )
+            try:
+                self.mic_receiver.start()
+            except Exception as e:
+                QMessageBox.critical(self, "Microphone Error", f"Failed to start microphone: {e}")
+                self.stop_streaming()
+                return
 
         self._save_settings()
 
-        self.status_badge.set_streaming(True)
+        mode_names = {MODE_SPEAKER: "SPEAKER STREAMING", MODE_MIC: "MIC ACTIVE", MODE_DUPLEX: "HEADSET DUPLEX"}
+        self.status_badge.set_streaming(True, mode_text=mode_names.get(self.current_mode, "LIVE"))
         self.btn_toggle.setText("■   STOP STREAMING")
         self.btn_toggle.setStyleSheet(
             "background-color: #DC2626; color: #FFFFFF; border-radius: 27px; "
@@ -1188,9 +1358,15 @@ class MainWindow(QMainWindow):
             self.streamer.stop()
             self.streamer = None
 
+        if self.mic_receiver:
+            self.mic_receiver.stop()
+            self.mic_receiver = None
+
         self.meter_widget.set_levels(0.0, 0.0, 0.0, 0.0)
+        self.mic_meter_widget.set_levels(0.0, 0.0, 0.0, 0.0)
         self.status_badge.set_streaming(False)
-        self.btn_toggle.setText("▶   START STREAMING")
+
+        self._on_mode_changed(self.current_mode)
         self.btn_toggle.setStyleSheet(
             "background-color: #2563EB; color: #FFFFFF; border-radius: 27px; "
             "font-weight: bold; border: none; letter-spacing: 0.5px;"
@@ -1200,13 +1376,18 @@ class MainWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool):
         self.device_combo.setEnabled(enabled)
         self.btn_refresh_devices.setEnabled(enabled)
+        self.btn_dir_speaker.setEnabled(enabled)
+        self.btn_dir_mic.setEnabled(enabled)
+        self.btn_dir_duplex.setEnabled(enabled)
         self.btn_mode_usb.setEnabled(enabled)
         self.btn_mode_wifi.setEnabled(enabled)
         self.btn_usb_to_wifi.setEnabled(enabled)
         self.btn_wifi_connect.setEnabled(enabled)
         self.btn_wifi_disconnect.setEnabled(enabled)
         self.btn_wifi_pair.setEnabled(enabled)
+        self.btn_wifi_qr.setEnabled(enabled)
         self.port_spin.setEnabled(enabled)
+        self.mic_port_spin.setEnabled(enabled)
         self.backend_combo.setEnabled(enabled)
         self.source_combo.setEnabled(enabled)
         self.btn_refresh_sources.setEnabled(enabled)
@@ -1232,6 +1413,18 @@ class MainWindow(QMainWindow):
 
         self.meter_widget.set_levels(l_rms, r_rms, l_peak, r_peak)
 
+    def _on_mic_stats_updated(self, stats: dict):
+        mic_rms = stats.get("mic_rms", 0.0)
+        mic_peak = stats.get("mic_peak", 0.0)
+        self.mic_meter_widget.set_levels(mic_rms, 0.0, mic_peak, 0.0)
+
+        # If only Mic mode is active, update telemetry with mic stats
+        if self.current_mode == MODE_MIC:
+            mb = stats.get("mic_bytes", 0) / (1024.0 * 1024.0)
+            self.lbl_total.setText(f"{mb:.1f} MB")
+            rate = stats.get("mic_kb_per_sec", 0.0)
+            self.lbl_rate.setText(f"{rate:.1f} KB/s")
+
     def _on_error_occurred(self, err_msg: str):
         self.stop_streaming()
         self.status_badge.set_error()
@@ -1239,7 +1432,7 @@ class MainWindow(QMainWindow):
             self,
             "Stream Interrupted",
             f"Audio transmission stopped:\n\n{err_msg}\n\n"
-            f"Check if Sonopipe app is running on your phone."
+            f"Ensure Sonopipe is running on your phone in the matching mode."
         )
 
     def closeEvent(self, event):

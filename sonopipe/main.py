@@ -29,10 +29,29 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-m", "--mode",
+        type=str,
+        default="speaker",
+        choices=["speaker", "mic", "duplex"],
+        help="Streaming mode: speaker (PC -> Phone), mic (Phone -> PC virtual mic), duplex (both, default: speaker)",
+    )
+    parser.add_argument(
         "-p", "--port",
         type=int,
         default=DEFAULT_PORT,
-        help=f"TCP port for ADB streaming (default: {DEFAULT_PORT})",
+        help=f"TCP port for ADB speaker streaming (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--mic-port",
+        type=int,
+        default=12851,
+        help="TCP port for ADB microphone streaming (default: 12851)",
+    )
+    parser.add_argument(
+        "--mic-gain",
+        type=float,
+        default=1.0,
+        help="Microphone software gain multiplier (0.0 to 2.0, default: 1.0)",
     )
     parser.add_argument(
         "-d", "--device",
