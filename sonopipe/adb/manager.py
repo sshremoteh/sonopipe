@@ -211,7 +211,12 @@ class AdbManager:
 
     def connect_wireless(self, host: str, port: int = 5555) -> tuple[bool, str]:
         """Connect to an Android device over Wi-Fi via adb connect <host>:<port>."""
-        target = f"{host.strip()}:{port}"
+        target = host.strip()
+        if ":" in target:
+            # host already contains port (e.g. 192.168.1.101:41001)
+            pass
+        else:
+            target = f"{target}:{port}"
         cmd = [self.adb_path, "connect", target]
 
         try:

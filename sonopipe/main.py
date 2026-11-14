@@ -5,7 +5,11 @@ Dispatches to GUI (PySide6) or CLI based on arguments.
 
 from __future__ import annotations
 import argparse
+import os
 import sys
+
+# Suppress noisy Qt Wayland client warnings on Hyprland/Wayland compositors
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland*=false")
 
 from sonopipe.stream.protocol import DEFAULT_PORT, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS
 

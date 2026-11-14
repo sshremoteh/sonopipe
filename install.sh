@@ -65,6 +65,7 @@ echo -e ">>> Installing Python dependencies (PySide6, soundcard, numpy)..."
 mkdir -p "$BIN_DIR"
 cat << 'EOF' > "$BIN_DIR/sonopipe"
 #!/bin/sh
+export QT_LOGGING_RULES="${QT_LOGGING_RULES:-qt.qpa.wayland*=false}"
 exec "$HOME/.local/share/sonopipe/.venv/bin/python3" "$HOME/.local/share/sonopipe/run.py" "$@"
 EOF
 chmod +x "$BIN_DIR/sonopipe"

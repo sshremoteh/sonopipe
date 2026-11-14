@@ -572,7 +572,20 @@ class MainWindow(QMainWindow):
         conn_card = self._create_card("📱  Android Connection (USB / Wireless Wi-Fi)")
         conn_layout = QVBoxLayout(conn_card)
         conn_layout.setContentsMargins(14, 14, 14, 14)
-        conn_layout.setSpacing(12)
+        conn_layout.setSpacing(10)
+
+        # Global Device Selector (always visible regardless of USB or Wi-Fi sub-tab)
+        dev_row = QHBoxLayout()
+        dev_row.setSpacing(8)
+        dev_row.addWidget(self._make_field_label("Connected Device:"))
+        self.device_combo = QComboBox()
+        self.device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        dev_row.addWidget(self.device_combo)
+
+        self.btn_refresh_devices = QPushButton("↻ Refresh")
+        self.btn_refresh_devices.clicked.connect(self.refresh_devices)
+        dev_row.addWidget(self.btn_refresh_devices)
+        conn_layout.addLayout(dev_row)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(6)
@@ -597,18 +610,9 @@ class MainWindow(QMainWindow):
 
         # SUB-PANEL 0: USB
         usb_widget = QWidget()
-        usb_grid = QGridLayout(usb_widget)
-        usb_grid.setContentsMargins(0, 4, 0, 0)
-        usb_grid.setSpacing(8)
-
-        usb_grid.addWidget(self._make_field_label("Connected Device:"), 0, 0)
-        self.device_combo = QComboBox()
-        self.device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        usb_grid.addWidget(self.device_combo, 0, 1)
-
-        self.btn_refresh_devices = QPushButton("↻ Refresh")
-        self.btn_refresh_devices.clicked.connect(self.refresh_devices)
-        usb_grid.addWidget(self.btn_refresh_devices, 0, 2)
+        usb_layout = QVBoxLayout(usb_widget)
+        usb_layout.setContentsMargins(0, 4, 0, 0)
+        usb_layout.setSpacing(6)
 
         self.btn_usb_to_wifi = QPushButton("⚡ Switch to Wi-Fi via USB (Auto-Setup)")
         self.btn_usb_to_wifi.setToolTip("Auto-detect phone's Wi-Fi IP, enable TCP/IP port 5555, and connect wirelessly")
@@ -616,7 +620,7 @@ class MainWindow(QMainWindow):
             "background-color: #1E293B; color: #38BDF8; border: 1px solid #0284C7; font-weight: bold; padding: 6px;"
         )
         self.btn_usb_to_wifi.clicked.connect(self._auto_switch_usb_to_wifi)
-        usb_grid.addWidget(self.btn_usb_to_wifi, 1, 0, 1, 3)
+        usb_layout.addWidget(self.btn_usb_to_wifi)
 
         self.conn_stack.addWidget(usb_widget)
 
@@ -628,7 +632,7 @@ class MainWindow(QMainWindow):
 
         wifi_grid.addWidget(self._make_field_label("Phone Wi-Fi IP:"), 0, 0)
         self.wifi_ip_input = QLineEdit()
-        self.wifi_ip_input.setPlaceholderText("e.g. 192.168.1.50")
+        self.wifi_ip_input.setPlaceholderText("e.g. 192.168.1.50 or 192.168.1.50:41001")
         wifi_grid.addWidget(self.wifi_ip_input, 0, 1)
 
         wifi_grid.addWidget(self._make_field_label("Port:"), 0, 2)
@@ -1069,7 +1073,8 @@ class MainWindow(QMainWindow):
             is_wifi = ":" in dev.serial
             tag = " [Wi-Fi]" if is_wifi else " [USB]"
             name = dev.model or ("Wireless Device" if is_wifi else "Android Device")
-            label = f"{name}{tag} ({dev.serial})"
+            state_warning = f" — ⚠ {dev.state.upper()}" if dev.state != "device" else ""
+            label = f"{name}{tag} ({dev.serial}){state_warning}"
             self.device_combo.addItem(label, dev.serial)
 
         self.refresh_audio_sources()
@@ -1217,24 +1222,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Connection Failed", f"Enabled TCP/IP on phone, but failed to connect to {ip}:5555:\n\n{out_conn}")
 
     def _connect_wireless_adb(self):
-        ip = self.wifi_ip_input.text().strip()
-        port = self.wifi_port_spin.value()
-        if not ip:
+        text = self.wifi_ip_input.text().strip()
+        if not text:
             QMessageBox.warning(self, "Missing IP", "Please enter your phone's Wi-Fi IP address.")
             return
 
-        self._save_settings()
-        ok, msg = self.adb.connect_wireless(ip, port)
-        if ok:
-            self.refresh_devices()
-            QMessageBox.information(self, "Connected", f"Connected wirelessly to {ip}:{port}!")
+        # Handle user pasting host:port directly into IP field (e.g. 192.168.1.101:41001)
+        if ":" in text:
+            host, port_str = text.split(":", 1)
+            try:
+                port = int(port_str)
+                self.wifi_ip_input.setText(host)
+                self.wifi_port_spin.setValue(port)
+            except ValueError:
+                port = self.wifi_port_spin.value()
         else:
-            QMessageBox.warning(self, "Connection Failed", f"Could not connect to {ip}:{port}:\n\n{msg}\n\nMake sure Wireless Debugging is on or click 'Guide' for help.")
+            host = text
+            port = self.wifi_port_spin.value()
+
+        self._save_settings()
+        ok, msg = self.adb.connect_wireless(host, port)
+        self.refresh_devices()
+        if ok:
+            QMessageBox.information(self, "Connected", f"Connected wirelessly to {host}:{port}!")
+        else:
+            QMessageBox.warning(self, "Connection Failed", f"Could not connect to {host}:{port}:\n\n{msg}\n\nMake sure Wireless Debugging is on or click 'Guide' for help.")
 
     def _disconnect_wireless_adb(self):
-        ip = self.wifi_ip_input.text().strip()
+        text = self.wifi_ip_input.text().strip()
         port = self.wifi_port_spin.value()
-        target = f"{ip}:{port}" if ip else None
+        if text:
+            target = text if ":" in text else f"{text}:{port}"
+        else:
+            target = None
         ok, msg = self.adb.disconnect_wireless(target)
         self.refresh_devices()
         QMessageBox.information(self, "Disconnected", f"Wireless device disconnected: {msg}")
@@ -1284,6 +1304,25 @@ class MainWindow(QMainWindow):
         port = self.port_spin.value()
         mic_port = self.mic_port_spin.value()
         selected_serial = self.device_combo.currentData() or None
+
+        if not selected_serial:
+            QMessageBox.warning(
+                self,
+                "No Device Selected",
+                "Please connect an Android phone via USB or Wireless ADB before starting the stream.",
+            )
+            return
+
+        for dev in self.adb.list_devices():
+            if dev.serial == selected_serial and dev.state != "device":
+                QMessageBox.warning(
+                    self,
+                    "Device Offline or Unauthorized",
+                    f"Selected device '{selected_serial}' is currently {dev.state.upper()}.\n\n"
+                    "• If using Wireless ADB, make sure phone screen is awake and reconnect.\n"
+                    "• If a prompt appears on phone, tap 'Allow debugging'.",
+                )
+                return
 
         # 1. Forward ports via ADB
         if self.adb.is_available():
@@ -1442,6 +1481,7 @@ class MainWindow(QMainWindow):
 
 
 def run_gui() -> int:
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland*=false")
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
