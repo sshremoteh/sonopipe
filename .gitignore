@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/*/*.iml
+.idea/
+*.keystore
+!debug.keystore

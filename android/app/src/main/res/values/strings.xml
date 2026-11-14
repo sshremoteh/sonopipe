@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">Sonopipe</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_listening">Listening for USB stream…</string>
+    <string name="status_streaming">Streaming active</string>
+    <string name="status_error">Error</string>
+    <string name="btn_start">Start Receiver</string>
+    <string name="btn_stop">Stop Receiver</string>
+    <string name="port_label">TCP Listen Port:</string>
+    <string name="default_port">12850</string>
+    <string name="volume_label">Volume</string>
+    <string name="stats_format">Received: %1$s | Rate: %2$s KB/s</string>
+    <string name="audio_specs_format">%1$d Hz • %2$s • 16-bit PCM</string>
+    <string name="channel_stereo">Stereo</string>
+    <string name="channel_mono">Mono</string>
+    <string name="adb_instruction">Run on PC:\nadb forward tcp:12850 tcp:12850</string>
+    <string name="notification_title">Sonopipe Speaker</string>
+    <string name="notification_listening">Waiting for audio stream from PC…</string>
+    <string name="notification_streaming">Streaming system audio from PC</string>
+    <string name="notification_channel_name">Audio Receiver Service</string>
+</resources>
