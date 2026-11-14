@@ -4,6 +4,7 @@ Creates a virtual null-sink and streams microphone audio via pacat.
 """
 
 from __future__ import annotations
+import os
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,16 @@ class LinuxVirtualMic(VirtualMicBase):
         # 1. Unload any lingering sonopipe_mic_sink module
         self._cleanup_old_module()
 
+        # Save current default sink so we can ensure PipeWire doesn't switch speakers to the mic sink!
+        orig_default_sink = None
+        if self._pactl:
+            try:
+                out = subprocess.check_output([self._pactl, "get-default-sink"], text=True, timeout=2).strip()
+                if out and out != self.sink_name:
+                    orig_default_sink = out
+            except Exception:
+                pass
+
         # 2. Load module-null-sink
         cmd = [
             self._pactl,
@@ -54,7 +65,14 @@ class LinuxVirtualMic(VirtualMicBase):
             print(f"[VirtualMic] Error running pactl: {e}", file=sys.stderr)
             return False
 
-        # 3. Start pacat streaming process writing into the sink
+        # Ensure default output sink remains physical speakers (never the mic sink!)
+        if orig_default_sink and self._pactl:
+            try:
+                subprocess.run([self._pactl, "set-default-sink", orig_default_sink], timeout=2)
+            except Exception:
+                pass
+
+        # 3. Start pacat streaming process writing EXCLUSIVELY into the null sink
         pacat_cmd = [
             self._pacat,
             "-p",
@@ -65,6 +83,9 @@ class LinuxVirtualMic(VirtualMicBase):
             "--format=s16le",
             "--latency-msec=15",
         ]
+        env = os.environ.copy()
+        env["PULSE_SINK"] = self.sink_name
+        env["PIPEWIRE_NODE"] = self.sink_name
         try:
             self._proc = subprocess.Popen(
                 pacat_cmd,
@@ -72,6 +93,7 @@ class LinuxVirtualMic(VirtualMicBase):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 bufsize=1920 * 4,
+                env=env,
             )
             self.is_active = True
             print(f"[VirtualMic] Created virtual microphone '{self.sink_name}.monitor' (Module ID: {self._module_id})")
