@@ -154,10 +154,21 @@ class AudioStreamer:
                 else:
                     send_bytes = chunk
 
-                # Calculate RMS / peak for audio visualizer
+                # Calculate Stereo RMS / peak for audio visualizer
                 float_samples = samples.astype(np.float32)
-                rms = float(np.sqrt(np.mean(float_samples ** 2))) / 32768.0
-                peak = float(np.max(np.abs(float_samples))) / 32768.0
+                if self.channels == 2 and len(float_samples) >= 2:
+                    stereo = float_samples.reshape(-1, 2)
+                    left_rms = float(np.sqrt(np.mean(stereo[:, 0] ** 2))) / 32768.0
+                    right_rms = float(np.sqrt(np.mean(stereo[:, 1] ** 2))) / 32768.0
+                    left_peak = float(np.max(np.abs(stereo[:, 0]))) / 32768.0
+                    right_peak = float(np.max(np.abs(stereo[:, 1]))) / 32768.0
+                    rms = (left_rms + right_rms) / 2.0
+                    peak = max(left_peak, right_peak)
+                else:
+                    rms = float(np.sqrt(np.mean(float_samples ** 2))) / 32768.0
+                    peak = float(np.max(np.abs(float_samples))) / 32768.0
+                    left_rms = right_rms = rms
+                    left_peak = right_peak = peak
 
                 # Send over TCP
                 self._sock.sendall(send_bytes)
@@ -166,7 +177,7 @@ class AudioStreamer:
 
                 now = time.time()
                 elapsed = now - window_start
-                if elapsed >= 0.5:
+                if elapsed >= 0.25:
                     rate_kb = (window_bytes / 1024.0) / elapsed
                     uptime = now - (self.start_time or now)
                     if self.on_stats_update:
@@ -175,6 +186,10 @@ class AudioStreamer:
                             "kb_per_sec": rate_kb,
                             "rms_level": min(1.0, rms * 3.0),
                             "peak_level": min(1.0, peak),
+                            "left_rms": min(1.0, left_rms * 3.0),
+                            "right_rms": min(1.0, right_rms * 3.0),
+                            "left_peak": min(1.0, left_peak),
+                            "right_peak": min(1.0, right_peak),
                             "uptime": uptime,
                         })
                     window_bytes = 0
