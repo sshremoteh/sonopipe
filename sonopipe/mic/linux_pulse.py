@@ -20,6 +20,7 @@ class LinuxVirtualMic(VirtualMicBase):
         self.sink_name = "sonopipe_mic_sink"
         self._module_id: Optional[str] = None
         self._proc: Optional[subprocess.Popen] = None
+        self._prev_default_source: Optional[str] = None
         self._pactl = shutil.which("pactl")
         self._pacat = shutil.which("pacat") or shutil.which("paplay")
 
@@ -74,6 +75,17 @@ class LinuxVirtualMic(VirtualMicBase):
             )
             self.is_active = True
             print(f"[VirtualMic] Created virtual microphone '{self.sink_name}.monitor' (Module ID: {self._module_id})")
+
+            # Set as default recording source so apps pick it up automatically
+            if self._pactl:
+                try:
+                    out = subprocess.check_output([self._pactl, "get-default-source"], text=True, timeout=2).strip()
+                    if out and out != f"{self.sink_name}.monitor":
+                        self._prev_default_source = out
+                    subprocess.run([self._pactl, "set-default-source", f"{self.sink_name}.monitor"], timeout=2)
+                except Exception:
+                    pass
+
             return True
         except Exception as e:
             print(f"[VirtualMic] Failed to start pacat: {e}", file=sys.stderr)
@@ -106,6 +118,13 @@ class LinuxVirtualMic(VirtualMicBase):
                 except Exception:
                     pass
             self._proc = None
+
+        if self._prev_default_source and self._pactl:
+            try:
+                subprocess.run([self._pactl, "set-default-source", self._prev_default_source], timeout=2)
+            except Exception:
+                pass
+            self._prev_default_source = None
 
         if self._module_id and self._pactl:
             try:

@@ -49,6 +49,8 @@ class LinuxPulseCapture(AudioCaptureBase):
                     if len(parts) >= 2:
                         src_name = parts[1]
                         if ".monitor" in src_name:
+                            if "sonopipe" in src_name.lower():
+                                continue  # Never capture Sonopipe virtual mic back into PC speakers!
                             is_def = (default_sink and src_name.startswith(default_sink))
                             display_name = src_name.replace(".monitor", " (Monitor)")
                             devices.append(

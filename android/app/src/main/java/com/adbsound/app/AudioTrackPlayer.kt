@@ -8,7 +8,8 @@ import android.util.Log
 
 class AudioTrackPlayer(
     val sampleRate: Int = 48000,
-    val channels: Int = 2
+    val channels: Int = 2,
+    val isCommunication: Boolean = false
 ) {
     companion object {
         private const val TAG = "AudioTrackPlayer"
@@ -35,9 +36,12 @@ class AudioTrackPlayer(
         // For minimal latency, we use double minBufferSize or at least 4KB
         val bufferSize = (minBufferSize * 2).coerceAtLeast(4096)
 
+        val usage = if (isCommunication) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
+        val contentType = if (isCommunication) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC
+
         val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .setUsage(usage)
+            .setContentType(contentType)
             .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
             .build()
 

@@ -197,7 +197,11 @@ class AudioReceiverService : Service() {
                 channels = config.channels
             )
 
-            player = AudioTrackPlayer(config.sampleRate, config.channels).apply {
+            player = AudioTrackPlayer(
+                sampleRate = config.sampleRate,
+                channels = config.channels,
+                isCommunication = (_stateFlow.value.mode == MODE_DUPLEX)
+            ).apply {
                 setVolume(currentVolume)
                 play()
             }

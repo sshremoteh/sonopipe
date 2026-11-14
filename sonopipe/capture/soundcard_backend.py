@@ -44,6 +44,8 @@ class SoundcardCapture(AudioCaptureBase):
             mics = sc.all_microphones(include_loopback=True)
             for m in mics:
                 if getattr(m, "isloopback", False):
+                    if "sonopipe" in str(m.name).lower() or "sonopipe" in str(m.id).lower():
+                        continue
                     is_def = (default_id is not None and default_id in str(m.id))
                     devices.append(
                         AudioDeviceInfo(
