@@ -294,7 +294,7 @@ class SettingsDialog(QDialog):
         self.btn_p40.setChecked(frames == 1920)
 
     def _on_autofind(self):
-        self.mw._auto_find_mdns()
+        self.mw._auto_find_and_connect()
         self.ip_input.setText(self.mw.wifi_ip_input.text())
         self.port_spin.setValue(self.mw.wifi_port_spin.value())
 

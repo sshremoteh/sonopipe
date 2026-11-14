@@ -636,6 +636,9 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Connection Failed", f"Could not connect to {ip_port}:\n\n{msg}")
 
+    # Alias for compatibility with settings dialog
+    _auto_find_mdns = _auto_find_and_connect
+
     def _auto_switch_usb_to_wifi(self):
         devices = self.adb.list_devices()
         usb_devices = [d for d in devices if ":" not in d.serial and d.state == "device"]
