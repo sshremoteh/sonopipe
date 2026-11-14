@@ -36,7 +36,7 @@ class AudioRecordSource(
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.MIC,
                 sampleRate,
                 channelConfig,
                 encoding,
@@ -44,10 +44,10 @@ class AudioRecordSource(
             )
 
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.w(TAG, "VOICE_COMMUNICATION failed, falling back to MIC source")
+                Log.w(TAG, "MIC source failed, falling back to DEFAULT source")
                 audioRecord?.release()
                 audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.DEFAULT,
                     sampleRate,
                     channelConfig,
                     encoding,

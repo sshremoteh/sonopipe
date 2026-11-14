@@ -96,6 +96,8 @@ class AudioReceiverService : Service() {
         createNotificationChannel()
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ADBSound::AudioStreamWakeLock")
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        audioManager?.mode = android.media.AudioManager.MODE_NORMAL
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -199,8 +201,7 @@ class AudioReceiverService : Service() {
 
             player = AudioTrackPlayer(
                 sampleRate = config.sampleRate,
-                channels = config.channels,
-                isCommunication = (_stateFlow.value.mode == MODE_DUPLEX)
+                channels = config.channels
             ).apply {
                 setVolume(currentVolume)
                 play()
