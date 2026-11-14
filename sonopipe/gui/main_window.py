@@ -641,6 +641,7 @@ class MainWindow(QMainWindow):
         self.wifi_port_spin.setRange(1024, 65535)
         self.wifi_port_spin.setValue(5555)
         self.wifi_port_spin.setFixedWidth(75)
+        self.wifi_port_spin.wheelEvent = lambda event: event.ignore()
         wifi_grid.addWidget(self.wifi_port_spin, 0, 3)
 
         btn_wifi_row = QHBoxLayout()
@@ -684,6 +685,7 @@ class MainWindow(QMainWindow):
         self.port_spin.setRange(1024, 65535)
         self.port_spin.setValue(DEFAULT_PORT)
         self.port_spin.setFixedWidth(75)
+        self.port_spin.wheelEvent = lambda event: event.ignore()  # Prevent accidental mouse wheel changes
         port_row.addWidget(self.port_spin)
 
         port_row.addWidget(self._make_field_label("Mic:"))
@@ -691,7 +693,13 @@ class MainWindow(QMainWindow):
         self.mic_port_spin.setRange(1024, 65535)
         self.mic_port_spin.setValue(DEFAULT_MIC_PORT)
         self.mic_port_spin.setFixedWidth(75)
+        self.mic_port_spin.wheelEvent = lambda event: event.ignore()  # Prevent accidental mouse wheel changes
         port_row.addWidget(self.mic_port_spin)
+
+        btn_reset_ports = QPushButton("↺ Defaults")
+        btn_reset_ports.setToolTip("Reset ports to default (Spk: 12850, Mic: 12851)")
+        btn_reset_ports.clicked.connect(self._reset_default_ports)
+        port_row.addWidget(btn_reset_ports)
 
         self.btn_copy_cmd = QPushButton("📋 Copy Forward Command")
         self.btn_copy_cmd.clicked.connect(self._copy_forward_command)
@@ -1163,6 +1171,10 @@ class MainWindow(QMainWindow):
 
         if self.mic_receiver:
             self.mic_receiver.set_gain(value / 100.0)
+
+    def _reset_default_ports(self):
+        self.port_spin.setValue(DEFAULT_PORT)
+        self.mic_port_spin.setValue(DEFAULT_MIC_PORT)
 
     def _copy_forward_command(self):
         port = self.port_spin.value()
