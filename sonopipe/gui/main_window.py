@@ -1,5 +1,5 @@
 """
-Sonopipe v1.3.0 — Material Design 3 (MD3) Desktop GUI.
+Sonopipe v1.4.0 — Material Design 3 (MD3) Desktop GUI.
 Features:
 - Full Duplex Audio: Speaker (PC → Phone), Microphone (Phone → PC), or Both simultaneously!
 - Native PipeWire/PulseAudio Virtual Microphone with live Mic VU meter
@@ -28,6 +28,8 @@ from PySide6.QtGui import (
     QBrush,
     QPen,
     QLinearGradient,
+    QIcon,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,6 +52,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QDialog,
     QStackedWidget,
+    QSystemTrayIcon,
+    QMenu,
 )
 
 from sonopipe.adb.manager import AdbManager
@@ -58,6 +62,7 @@ from sonopipe.adb.qr_dialog import WirelessQrDialog
 from sonopipe.capture.factory import list_audio_devices, get_default_backend_name
 from sonopipe.stream.sender import AudioStreamer
 from sonopipe.mic.receiver import MicReceiver, DEFAULT_MIC_PORT
+from sonopipe.mic.tester import LocalMicTester
 from sonopipe.stream.protocol import DEFAULT_PORT
 
 MODE_SPEAKER = 0
@@ -466,7 +471,7 @@ class StereoVuMeterWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sonopipe v1.3.0 — PC Audio & Microphone over ADB")
+        self.setWindowTitle("Sonopipe v1.4.0 — PC Audio & Microphone over ADB")
         self.resize(550, 780)
         self.setMinimumSize(460, 500)
 
@@ -488,9 +493,18 @@ class MainWindow(QMainWindow):
         self.saved_volume = 100
         self.saved_mic_gain = 100
 
+        self.mic_tester = LocalMicTester()
+        self.mic_test_timer = QTimer(self)
+        self.mic_test_timer.setInterval(1000)
+        self.mic_test_countdown = 5
+        self.mic_test_timer.timeout.connect(self._on_mic_test_tick)
+
+        self.tray_icon: Optional[QSystemTrayIcon] = None
+
         self._init_ui()
         self._apply_theme()
         self._load_saved_settings()
+        self._init_tray_icon()
         self.refresh_devices()
 
     def _init_ui(self):
@@ -522,7 +536,7 @@ class MainWindow(QMainWindow):
         title_lbl.setStyleSheet("color: #F8FAFC; letter-spacing: -0.5px;")
         title_row.addWidget(title_lbl)
 
-        ver_badge = QLabel("v1.3.0")
+        ver_badge = QLabel("v1.4.0")
         ver_badge.setStyleSheet(
             "background-color: #172554; color: #60A5FA; font-size: 11px; "
             "font-weight: bold; padding: 2px 8px; border-radius: 9px; border: 1px solid #1D4ED8;"
@@ -647,6 +661,12 @@ class MainWindow(QMainWindow):
         btn_wifi_row = QHBoxLayout()
         btn_wifi_row.setSpacing(6)
 
+        self.btn_wifi_autofind = QPushButton("🔍 Auto-Find")
+        self.btn_wifi_autofind.setToolTip("Auto-discover phone on local Wi-Fi via ADB mDNS")
+        self.btn_wifi_autofind.setStyleSheet("background-color: #0284C7; color: #FFFFFF; font-weight: bold;")
+        self.btn_wifi_autofind.clicked.connect(self._auto_find_mdns)
+        btn_wifi_row.addWidget(self.btn_wifi_autofind)
+
         self.btn_wifi_connect = QPushButton("📶 Connect")
         self.btn_wifi_connect.setStyleSheet("background-color: #065F46; color: #6EE7B7; font-weight: bold;")
         self.btn_wifi_connect.clicked.connect(self._connect_wireless_adb)
@@ -656,7 +676,7 @@ class MainWindow(QMainWindow):
         self.btn_wifi_disconnect.clicked.connect(self._disconnect_wireless_adb)
         btn_wifi_row.addWidget(self.btn_wifi_disconnect)
 
-        self.btn_wifi_qr = QPushButton("📷 QR Pair")
+        self.btn_wifi_qr = QPushButton("📷 QR")
         self.btn_wifi_qr.setToolTip("Show QR code for Android 11+ pairing or LAN connect")
         self.btn_wifi_qr.setStyleSheet("background-color: #1E293B; color: #38BDF8; font-weight: bold;")
         self.btn_wifi_qr.clicked.connect(self._open_qr_dialog)
@@ -828,6 +848,28 @@ class MainWindow(QMainWindow):
         self.lbl_mic_gain.setStyleSheet("color: #F8FAFC;")
         mic_row.addWidget(self.lbl_mic_gain)
         mic_layout.addLayout(mic_row)
+
+        # Tools row: Noise Gate & Loopback Mic Tester
+        mic_tools_row = QHBoxLayout()
+        mic_tools_row.setSpacing(8)
+
+        mic_tools_row.addWidget(self._make_field_label("Noise Gate:"))
+        self.combo_noise_gate = QComboBox()
+        self.combo_noise_gate.addItem("Off (Disabled)", 0.0)
+        self.combo_noise_gate.addItem("Low (-42 dB)", 0.008)
+        self.combo_noise_gate.addItem("Medium (-36 dB)", 0.016)
+        self.combo_noise_gate.addItem("High (-24 dB)", 0.060)
+        self.combo_noise_gate.currentIndexChanged.connect(self._on_noise_gate_changed)
+        mic_tools_row.addWidget(self.combo_noise_gate)
+
+        self.btn_mic_test = QPushButton("🎧 Test Mic (Loopback)")
+        self.btn_mic_test.setToolTip("Listen to your phone's microphone locally in PC headphones for 5 seconds")
+        self.btn_mic_test.setStyleSheet("background-color: #1E293B; color: #38BDF8; font-weight: bold; padding: 4px 8px;")
+        self.btn_mic_test.clicked.connect(self._toggle_mic_test)
+        mic_tools_row.addWidget(self.btn_mic_test)
+        mic_tools_row.addStretch()
+
+        mic_layout.addLayout(mic_tools_row)
 
         # Mic Live VU Meter
         self.mic_meter_widget = StereoVuMeterWidget(is_mono=True, label_text="MIC IN")
@@ -1172,6 +1214,73 @@ class MainWindow(QMainWindow):
         if self.mic_receiver:
             self.mic_receiver.set_gain(value / 100.0)
 
+    def _on_noise_gate_changed(self, idx: int):
+        val = self.combo_noise_gate.currentData()
+        if self.mic_receiver and val is not None:
+            self.mic_receiver.set_noise_gate(float(val))
+
+    def _toggle_mic_test(self):
+        if self.mic_tester.is_active:
+            self._stop_mic_test()
+        else:
+            if not self.mic_receiver or not self.mic_receiver.is_running:
+                QMessageBox.information(
+                    self,
+                    "Mic Not Streaming",
+                    "Please click START STREAMING in Mic or Duplex mode first to test your microphone."
+                )
+                return
+
+            if self.mic_tester.start():
+                self.mic_receiver.set_loopback(True, self.mic_tester.write_chunk)
+                self.mic_test_countdown = 6
+                self.btn_mic_test.setText(f"⏹ Stop Test ({self.mic_test_countdown}s)")
+                self.btn_mic_test.setStyleSheet("background-color: #991B1B; color: #FCA5A5; font-weight: bold;")
+                self.mic_test_timer.start()
+
+    def _on_mic_test_tick(self):
+        self.mic_test_countdown -= 1
+        if self.mic_test_countdown <= 0:
+            self._stop_mic_test()
+        else:
+            self.btn_mic_test.setText(f"⏹ Stop Test ({self.mic_test_countdown}s)")
+
+    def _stop_mic_test(self):
+        self.mic_test_timer.stop()
+        self.mic_tester.stop()
+        if self.mic_receiver:
+            self.mic_receiver.set_loopback(False)
+        self.btn_mic_test.setText("🎧 Test Mic (Loopback)")
+        self.btn_mic_test.setStyleSheet("background-color: #1E293B; color: #38BDF8; font-weight: bold; padding: 4px 8px;")
+
+    def _auto_find_mdns(self):
+        services = self.adb.discover_mdns_services()
+        if not services:
+            QMessageBox.information(
+                self,
+                "mDNS Discovery",
+                "No Wireless ADB devices found on the local Wi-Fi.\n\n"
+                "• Ensure Wireless Debugging is ON in phone Developer options.\n"
+                "• Verify phone and PC are connected to the same Wi-Fi network."
+            )
+            return
+
+        srv_name, srv_type, ip_port = services[0]
+        if ":" in ip_port:
+            host, port_str = ip_port.split(":", 1)
+            self.wifi_ip_input.setText(host)
+            try:
+                self.wifi_port_spin.setValue(int(port_str))
+            except ValueError:
+                pass
+            QMessageBox.information(
+                self,
+                "Device Discovered!",
+                f"🎉 Found phone via mDNS:\n\nDevice: {srv_name}\nAddress: {ip_port}\n\nClick 'Connect' to establish connection."
+            )
+        else:
+            self.wifi_ip_input.setText(ip_port)
+
     def _reset_default_ports(self):
         self.port_spin.setValue(DEFAULT_PORT)
         self.mic_port_spin.setValue(DEFAULT_MIC_PORT)
@@ -1387,6 +1496,10 @@ class MainWindow(QMainWindow):
                 on_stats_update=lambda st: self.signals.mic_stats_updated.emit(st),
                 on_error=lambda err: self.signals.error_occurred.emit(err),
             )
+            gate_val = self.combo_noise_gate.currentData()
+            if gate_val is not None:
+                self.mic_receiver.set_noise_gate(float(gate_val))
+
             try:
                 self.mic_receiver.start()
             except Exception as e:
@@ -1405,7 +1518,15 @@ class MainWindow(QMainWindow):
         )
         self._set_controls_enabled(False)
 
+        if self.tray_icon:
+            self.tray_icon.setIcon(self._create_app_icon(True))
+            self.tray_icon.setToolTip(f"Sonopipe: Streaming ({mode_names.get(self.current_mode, 'LIVE')})")
+            if hasattr(self, 'tray_act_stream'):
+                self.tray_act_stream.setText("Stop Streaming")
+
     def stop_streaming(self):
+        self._stop_mic_test()
+
         if self.streamer:
             self.streamer.stop()
             self.streamer = None
@@ -1424,6 +1545,12 @@ class MainWindow(QMainWindow):
             "font-weight: bold; border: none; letter-spacing: 0.5px;"
         )
         self._set_controls_enabled(True)
+
+        if self.tray_icon:
+            self.tray_icon.setIcon(self._create_app_icon(False))
+            self.tray_icon.setToolTip("Sonopipe: Idle")
+            if hasattr(self, 'tray_act_stream'):
+                self.tray_act_stream.setText("Start Streaming")
 
     def _set_controls_enabled(self, enabled: bool):
         self.device_combo.setEnabled(enabled)
@@ -1446,6 +1573,8 @@ class MainWindow(QMainWindow):
         self.btn_p10.setEnabled(enabled)
         self.btn_p20.setEnabled(enabled)
         self.btn_p40.setEnabled(enabled)
+        if hasattr(self, 'btn_wifi_autofind'):
+            self.btn_wifi_autofind.setEnabled(enabled)
 
     def _on_stats_updated(self, stats: dict):
         mb = stats.get("bytes_sent", 0) / (1024.0 * 1024.0)
@@ -1487,10 +1616,92 @@ class MainWindow(QMainWindow):
             f"Ensure Sonopipe is running on your phone in the matching mode."
         )
 
-    def closeEvent(self, event):
+    def _create_app_icon(self, is_streaming: bool = False) -> QIcon:
+        pix = QPixmap(32, 32)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        bg_col = QColor("#0284C7") if not is_streaming else QColor("#10B981")
+        p.setBrush(QBrush(bg_col))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(2, 2, 28, 28, 8, 8)
+        p.setPen(QPen(QColor("#FFFFFF"), 2.5))
+        p.drawLine(10, 16, 10, 16)
+        p.drawLine(16, 11, 16, 21)
+        p.drawLine(22, 7, 22, 25)
+        p.end()
+        return QIcon(pix)
+
+    def _init_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray_icon = QSystemTrayIcon(self._create_app_icon(False), self)
+        self.tray_icon.setToolTip("Sonopipe: Idle")
+
+        menu = QMenu()
+        self.tray_act_toggle_win = menu.addAction("Show Sonopipe")
+        self.tray_act_toggle_win.triggered.connect(self._toggle_window_visibility)
+
+        menu.addSeparator()
+        self.tray_act_stream = menu.addAction("Start Streaming")
+        self.tray_act_stream.triggered.connect(self.toggle_streaming)
+
+        self.tray_act_mute_spk = menu.addAction("Mute Speaker")
+        self.tray_act_mute_spk.triggered.connect(self._toggle_mute)
+
+        self.tray_act_mute_mic = menu.addAction("Mute Mic")
+        self.tray_act_mute_mic.triggered.connect(self._toggle_mic_mute)
+
+        menu.addSeparator()
+        act_quit = menu.addAction("Quit Sonopipe")
+        act_quit.triggered.connect(self._quit_app)
+
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._toggle_window_visibility()
+
+    def _toggle_window_visibility(self):
+        if self.isVisible():
+            self.hide()
+            if hasattr(self, 'tray_act_toggle_win'):
+                self.tray_act_toggle_win.setText("Show Sonopipe")
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            if hasattr(self, 'tray_act_toggle_win'):
+                self.tray_act_toggle_win.setText("Hide Sonopipe")
+
+    def _quit_app(self):
+        self._stop_mic_test()
         self._save_settings()
         self.stop_streaming()
-        event.accept()
+        if self.tray_icon:
+            self.tray_icon.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        if self.tray_icon and self.tray_icon.isVisible():
+            self.hide()
+            self.tray_icon.showMessage(
+                "Sonopipe",
+                "Sonopipe is running in the background. Click tray icon to open.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+            if hasattr(self, 'tray_act_toggle_win'):
+                self.tray_act_toggle_win.setText("Show Sonopipe")
+            event.ignore()
+        else:
+            self._stop_mic_test()
+            self._save_settings()
+            self.stop_streaming()
+            event.accept()
 
 
 def run_gui() -> int:

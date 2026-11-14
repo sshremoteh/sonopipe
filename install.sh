@@ -70,6 +70,10 @@ exec "$HOME/.local/share/sonopipe/.venv/bin/python3" "$HOME/.local/share/sonopip
 EOF
 chmod +x "$BIN_DIR/sonopipe"
 
+# 4.1 Install desktop entry for app launchers (Rofi, Wofi, GNOME, etc.)
+mkdir -p "${HOME}/.local/share/applications"
+cp "$INSTALL_DIR/sonopipe.desktop" "${HOME}/.local/share/applications/sonopipe.desktop" 2>/dev/null || true
+
 # 5. Add alias and PATH to Shell Configuration
 update_shell_rc() {
     local rc_file="$1"

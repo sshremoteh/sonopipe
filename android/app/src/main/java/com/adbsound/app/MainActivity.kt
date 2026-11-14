@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
                     putExtra(AudioReceiverService.EXTRA_MODE, mode)
                 }
                 ContextCompat.startForegroundService(this, intent)
+                requestBatteryOptimizationExemption()
             }
         }
 
@@ -245,5 +246,19 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {}
         return null
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = android.net.Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }
+        }
     }
 }

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Sonopipe
+GenericName=Audio & Microphone over ADB
+Comment=Stream PC sound and microphone to/from Android smartphone via ADB
+Exec=sonopipe
+Icon=audio-card
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Utility;
+StartupNotify=true
+Keywords=audio;sound;adb;stream;mic;microphone;

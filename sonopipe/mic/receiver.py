@@ -33,6 +33,9 @@ class MicReceiver:
         self.host = host
         self.port = port
         self.gain = max(0.0, min(2.0, gain))
+        self.noise_gate_threshold = 0.0
+        self.loopback_enabled = False
+        self._loopback_cb: Optional[Callable[[bytes], None]] = None
         self.on_stats_update = on_stats_update
         self.on_error = on_error
 
@@ -48,6 +51,16 @@ class MicReceiver:
 
     def set_gain(self, gain: float) -> None:
         self.gain = max(0.0, min(2.0, gain))
+
+    def set_noise_gate(self, threshold: float) -> None:
+        """Set noise gate threshold (0.0 to 0.1, 0.0 = disabled)."""
+        self.noise_gate_threshold = max(0.0, min(0.1, threshold))
+
+    def set_loopback(self, enabled: bool, callback: Optional[Callable[[bytes], None]] = None) -> None:
+        """Enable or disable local audio loopback monitor."""
+        self.loopback_enabled = enabled
+        if callback is not None:
+            self._loopback_cb = callback
 
     def start(self) -> None:
         if self.is_running:
@@ -150,8 +163,19 @@ class MicReceiver:
                 rms = float(np.sqrt(np.mean(float_s ** 2))) / 32768.0
                 peak = float(np.max(np.abs(float_s))) / 32768.0
 
+                # Noise Gate: silence chunk if level is below noise floor threshold
+                is_gated = False
+                if self.noise_gate_threshold > 0.001 and rms < self.noise_gate_threshold:
+                    out_bytes = b"\x00" * len(out_bytes)
+                    is_gated = True
+
                 # Write into virtual mic
                 self._virtual_mic.write_chunk(out_bytes)
+                if self.loopback_enabled and self._loopback_cb and not is_gated:
+                    try:
+                        self._loopback_cb(out_bytes)
+                    except Exception:
+                        pass
                 self.total_bytes_received += len(out_bytes)
                 window_bytes += len(out_bytes)
 

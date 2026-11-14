@@ -317,3 +317,28 @@ class AdbManager:
             pass
 
         return None
+
+    def discover_mdns_services(self) -> List[tuple[str, str, str]]:
+        """
+        Discover Wireless ADB devices advertised over mDNS on local Wi-Fi.
+        Returns list of (service_name, service_type, ip_port).
+        e.g. [('adb-R3CT70BP4MB-oqTeac', '_adb-tls-connect._tcp', '192.168.1.101:41001')]
+        """
+        try:
+            res = subprocess.run(
+                [self.adb_path, "mdns", "services"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=4,
+            )
+            results = []
+            for line in res.stdout.strip().splitlines():
+                if "List of discovered" in line:
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 3 and ":" in parts[2]:
+                    results.append((parts[0], parts[1], parts[2]))
+            return results
+        except Exception:
+            return []
