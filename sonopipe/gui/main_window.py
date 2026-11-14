@@ -1,5 +1,5 @@
 """
-Sonopipe v1.2.0 — Material Design 3 (MD3) Desktop GUI.
+Sonopipe v1.3.0 — Material Design 3 (MD3) Desktop GUI.
 Features:
 - Full Duplex Audio: Speaker (PC → Phone), Microphone (Phone → PC), or Both simultaneously!
 - Native PipeWire/PulseAudio Virtual Microphone with live Mic VU meter
@@ -465,7 +465,7 @@ class StereoVuMeterWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sonopipe v1.2.0 — PC Audio & Microphone over ADB")
+        self.setWindowTitle("Sonopipe v1.3.0 — PC Audio & Microphone over ADB")
         self.resize(550, 780)
         self.setMinimumSize(460, 500)
 
@@ -521,7 +521,7 @@ class MainWindow(QMainWindow):
         title_lbl.setStyleSheet("color: #F8FAFC; letter-spacing: -0.5px;")
         title_row.addWidget(title_lbl)
 
-        ver_badge = QLabel("v1.2.0")
+        ver_badge = QLabel("v1.3.0")
         ver_badge.setStyleSheet(
             "background-color: #172554; color: #60A5FA; font-size: 11px; "
             "font-weight: bold; padding: 2px 8px; border-radius: 9px; border: 1px solid #1D4ED8;"
