@@ -48,12 +48,20 @@ from PySide6.QtWidgets import (
 from sonopipe.adb.manager import AdbManager
 from sonopipe.adb.installer import install_and_launch
 from sonopipe.adb.qr_dialog import WirelessQrDialog, WirelessPairDialog
+from sonopipe.adb.wifi_store import WifiDeviceStore
 from sonopipe.capture.factory import list_audio_devices, get_default_backend_name
 from sonopipe.stream.sender import AudioStreamer
 from sonopipe.stream.protocol import DEFAULT_PORT
 from sonopipe.mic.receiver import MicReceiver, DEFAULT_MIC_PORT
 from sonopipe.mic.tester import LocalMicTester
 from sonopipe.gui.settings_dialog import SettingsDialog
+from sonopipe.gui.theme import MD3, md3_base_stylesheet
+from sonopipe.gui.wifi_dialog import (
+    WifiConnectDialog,
+    WifiConnectWorker,
+    WifiScanWorker,
+    WirelessGuideDialog,
+)
 
 
 MODE_SPEAKER = "speaker"
@@ -81,6 +89,29 @@ class ApkInstallWorker(QThread):
             progress_cb=lambda text: self.progress.emit(text),
         )
         self.finished.emit(success, msg)
+
+
+class AutoReconnectWorker(QThread):
+    """Background worker that reconnects to remembered Wi-Fi devices on launch."""
+
+    finished = Signal(str)
+
+    def __init__(self, adb: AdbManager, candidates: list[dict]):
+        super().__init__()
+        self.adb = adb
+        self.candidates = candidates
+
+    def run(self):
+        for dev in self.candidates:
+            host = dev.get("host", "")
+            port = int(dev.get("port", 5555))
+            if not host:
+                continue
+            ok, _ = self.adb.connect_wireless(host, port)
+            if ok:
+                self.finished.emit(f"{host}:{port}")
+                return
+        self.finished.emit("")
 
 
 class MinimalLedMeter(QWidget):
@@ -174,11 +205,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Sonopipe — Audio & Mic over ADB")
-        self.setFixedSize(450, 560)
+        self.setFixedSize(460, 610)
 
         self.adb = AdbManager()
         self.streamer: Optional[AudioStreamer] = None
         self.mic_receiver: Optional[MicReceiver] = None
+        self._wifi_scan_worker: Optional[WifiScanWorker] = None
+        self._wifi_conn_worker: Optional[WifiConnectWorker] = None
+        self._auto_reconn_worker: Optional[AutoReconnectWorker] = None
 
         self.signals = StreamerSignals()
         self.signals.stats_updated.connect(self._on_stats_updated)
@@ -186,6 +220,7 @@ class MainWindow(QMainWindow):
         self.signals.error_occurred.connect(self._on_error_occurred)
 
         self.settings = QSettings("Sonopipe", "Sonopipe")
+        self.wifi_store = WifiDeviceStore(self.settings)
 
         self.current_mode = MODE_SPEAKER
         self.chunk_frames = 960
@@ -225,8 +260,10 @@ class MainWindow(QMainWindow):
         self._load_saved_settings()
         self._init_tray_icon()
         self.refresh_devices()
+        QTimer.singleShot(250, self._auto_reconnect_saved_wifi)
 
     def _init_ui(self):
+        c = MD3
         container = QWidget(self)
         self.setCentralWidget(container)
 
@@ -234,107 +271,153 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(20, 18, 20, 18)
         root_layout.setSpacing(14)
 
-        # 1. TOP BAR: Title & Status + Settings
+        # 1. MD3 TOP APP BAR: Status + Title + Wi-Fi Pill + MD3 Overflow Menu
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(0, 0, 0, 0)
+        top_bar.setSpacing(8)
 
-        # Pulse indicator dot
         self.status_dot = QLabel("●")
-        self.status_dot.setFont(QFont("sans-serif", 12))
-        self.status_dot.setStyleSheet("color: #64748B;")
+        self.status_dot.setFont(QFont("sans-serif", 11))
+        self.status_dot.setStyleSheet(f"color: {c['muted']};")
         top_bar.addWidget(self.status_dot)
 
         app_title = QLabel("Sonopipe")
-        app_title.setFont(QFont("sans-serif", 15, QFont.Bold))
-        app_title.setStyleSheet("color: #F8FAFC; letter-spacing: -0.3px;")
+        app_title.setFont(QFont("sans-serif", 16, QFont.Bold))
+        app_title.setStyleSheet(f"color: {c['on_surface']}; letter-spacing: -0.3px;")
         top_bar.addWidget(app_title)
 
-        ver_badge = QLabel("v1.4.0")
+        ver_badge = QLabel("v1.5")
         ver_badge.setFont(QFont("sans-serif", 9, QFont.Bold))
-        ver_badge.setStyleSheet("color: #64748B; background-color: #171A21; padding: 2px 6px; border-radius: 4px;")
+        ver_badge.setStyleSheet(
+            f"color: {c['on_secondary_container']}; background-color: {c['secondary_container']}; "
+            "padding: 2px 8px; border-radius: 10px;"
+        )
         top_bar.addWidget(ver_badge)
 
         top_bar.addStretch()
 
-        self.btn_settings = QPushButton("⚙")
-        self.btn_settings.setFixedSize(34, 30)
-        self.btn_settings.setToolTip("Advanced Settings (Wi-Fi, Latency, APK, Ports)")
-        self.btn_settings.setStyleSheet(
-            "background-color: #161A22; color: #94A3B8; border: 1px solid #222634; border-radius: 6px; font-size: 14px;"
+        self.btn_wifi_menu = QPushButton("📶  Wi-Fi")
+        self.btn_wifi_menu.setFixedHeight(34)
+        self.btn_wifi_menu.setToolTip("Manage & connect saved Wi-Fi devices")
+        self.btn_wifi_menu.setStyleSheet(
+            f"QPushButton {{ background-color: {c['primary_container']}; color: {c['on_primary_container']}; "
+            "border: none; border-radius: 17px; padding: 0 14px; font-weight: 700; font-size: 12px; }}"
+            f"QPushButton:hover {{ background-color: {c['primary']}; color: {c['on_primary']}; }}"
         )
-        self.btn_settings.clicked.connect(self._open_settings_dialog)
-        top_bar.addWidget(self.btn_settings)
+        self.btn_wifi_menu.clicked.connect(self._open_wifi_dialog)
+        top_bar.addWidget(self.btn_wifi_menu)
+
+        self.btn_menu = QPushButton("⋮")
+        self.btn_menu.setFixedSize(34, 34)
+        self.btn_menu.setToolTip("Menu")
+        self.btn_menu.setStyleSheet(
+            f"QPushButton {{ background-color: {c['surface_container_high']}; color: {c['on_surface']}; "
+            f"border: 1px solid {c['outline_variant']}; border-radius: 17px; font-size: 16px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: {c['surface_container_highest']}; }}"
+        )
+        self._build_md3_menu()
+        self.btn_menu.clicked.connect(self._show_md3_menu)
+        top_bar.addWidget(self.btn_menu)
 
         root_layout.addLayout(top_bar)
 
-        # 2. CARD: TARGET DEVICE
+        # 2. MD3 CARD: TARGET DEVICE + QUICK SAVED WI-FI CHIPS
         dev_card = QFrame()
-        dev_card.setStyleSheet("background-color: #13161F; border: 1px solid #1E2330; border-radius: 12px;")
-        dev_layout = QHBoxLayout(dev_card)
-        dev_layout.setContentsMargins(12, 10, 12, 10)
+        dev_card.setStyleSheet(
+            f"background-color: {c['surface_container']}; "
+            f"border: 1px solid {c['outline_variant']}; border-radius: 18px;"
+        )
+        dev_card_layout = QVBoxLayout(dev_card)
+        dev_card_layout.setContentsMargins(14, 12, 14, 12)
+        dev_card_layout.setSpacing(8)
+
+        dev_layout = QHBoxLayout()
         dev_layout.setSpacing(10)
 
-        phone_icon = QLabel("📱")
-        phone_icon.setFont(QFont("sans-serif", 16))
-        dev_layout.addWidget(phone_icon)
+        phone_badge = QLabel("📱")
+        phone_badge.setFixedSize(36, 36)
+        phone_badge.setAlignment(Qt.AlignCenter)
+        phone_badge.setStyleSheet(
+            f"background-color: {c['surface_container_high']}; border-radius: 18px; font-size: 16px; border: none;"
+        )
+        dev_layout.addWidget(phone_badge)
 
         dev_col = QVBoxLayout()
         dev_col.setSpacing(2)
 
         self.device_combo = QComboBox()
         self.device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.device_combo.setStyleSheet("""
-            QComboBox {
+        self.device_combo.setStyleSheet(f"""
+            QComboBox {{
                 background-color: transparent;
                 border: none;
-                color: #F8FAFC;
-                font-weight: bold;
+                color: {c['on_surface']};
+                font-weight: 700;
                 font-size: 13px;
                 padding: 0;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: #13161F;
-                color: #F8FAFC;
-                selection-background-color: #2563EB;
-                border: 1px solid #1E2330;
-                border-radius: 6px;
-                padding: 4px;
-            }
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background-color: {c['surface_container_high']};
+                color: {c['on_surface']};
+                selection-background-color: {c['primary_container']};
+                selection-color: {c['on_primary_container']};
+                border: 1px solid {c['outline_variant']};
+                border-radius: 12px;
+                padding: 6px;
+            }}
         """)
         dev_col.addWidget(self.device_combo)
 
         self.lbl_device_status = QLabel("○ Scanning ADB devices...")
-        self.lbl_device_status.setStyleSheet("color: #64748B; font-size: 11px;")
+        self.lbl_device_status.setStyleSheet(f"color: {c['on_surface_variant']}; font-size: 11px; border: none;")
         dev_col.addWidget(self.lbl_device_status)
         dev_layout.addLayout(dev_col)
 
-        self.btn_quick_find = QPushButton("⚡ Auto-Find")
+        self.btn_quick_find = QPushButton("⚡ Auto")
+        self.btn_quick_find.setFixedHeight(32)
         self.btn_quick_find.setToolTip("Auto-discover phone on Wi-Fi via mDNS and connect")
         self.btn_quick_find.setStyleSheet(
-            "background-color: #1E293B; color: #38BDF8; font-weight: bold; font-size: 11px; "
-            "padding: 6px 10px; border: 1px solid #0284C7; border-radius: 6px;"
+            f"QPushButton {{ background-color: {c['secondary_container']}; color: {c['on_secondary_container']}; "
+            "font-weight: 700; font-size: 11px; padding: 0 12px; border: none; border-radius: 16px; }}"
+            f"QPushButton:hover {{ background-color: {c['primary_container']}; color: {c['on_primary_container']}; }}"
         )
         self.btn_quick_find.clicked.connect(self._auto_find_and_connect)
         dev_layout.addWidget(self.btn_quick_find)
 
         self.btn_refresh = QPushButton("↻")
-        self.btn_refresh.setFixedSize(30, 28)
+        self.btn_refresh.setFixedSize(32, 32)
         self.btn_refresh.setToolTip("Refresh connected ADB devices")
         self.btn_refresh.setStyleSheet(
-            "background-color: #181C26; color: #94A3B8; border: 1px solid #222634; border-radius: 6px;"
+            f"QPushButton {{ background-color: {c['surface_container_high']}; color: {c['on_surface_variant']}; "
+            f"border: 1px solid {c['outline_variant']}; border-radius: 16px; font-size: 14px; }}"
+            f"QPushButton:hover {{ background-color: {c['surface_container_highest']}; color: {c['on_surface']}; }}"
         )
-        self.btn_refresh.clicked.connect(self.refresh_devices)
+        self.btn_refresh.clicked.connect(lambda: self.refresh_devices())
         dev_layout.addWidget(self.btn_refresh)
+
+        dev_card_layout.addLayout(dev_layout)
+
+        # Quick-connect chips row for remembered Wi-Fi devices
+        self.quick_wifi_bar = QWidget()
+        self.quick_wifi_bar.setStyleSheet("border: none; background: transparent;")
+        self.quick_wifi_layout = QHBoxLayout(self.quick_wifi_bar)
+        self.quick_wifi_layout.setContentsMargins(0, 2, 0, 0)
+        self.quick_wifi_layout.setSpacing(6)
+        self.quick_wifi_bar.setVisible(False)
+        dev_card_layout.addWidget(self.quick_wifi_bar)
 
         root_layout.addWidget(dev_card)
 
-        # 3. SEGMENTED MODE SELECTOR (Speaker / Mic / Headset)
+        # 3. MD3 SEGMENTED MODE SELECTOR (Speaker / Mic / Headset)
         mode_frame = QFrame()
-        mode_frame.setStyleSheet("background-color: #0E1017; border: 1px solid #1E2330; border-radius: 8px;")
+        mode_frame.setStyleSheet(
+            f"background-color: {c['surface_container_low']}; "
+            f"border: 1px solid {c['outline_variant']}; border-radius: 20px;"
+        )
         mode_layout = QHBoxLayout(mode_frame)
-        mode_layout.setContentsMargins(3, 3, 3, 3)
-        mode_layout.setSpacing(3)
+        mode_layout.setContentsMargins(4, 4, 4, 4)
+        mode_layout.setSpacing(4)
 
         self.btn_mode_spk = QPushButton("🔊  Speaker")
         self.btn_mode_mic = QPushButton("🎙  Microphone")
@@ -343,7 +426,7 @@ class MainWindow(QMainWindow):
         mode_group = QButtonGroup(self)
         for idx, btn in enumerate((self.btn_mode_spk, self.btn_mode_mic, self.btn_mode_dup)):
             btn.setCheckable(True)
-            btn.setFixedHeight(30)
+            btn.setFixedHeight(32)
             btn.setFont(QFont("sans-serif", 11, QFont.Bold))
             mode_group.addButton(btn, idx)
             mode_layout.addWidget(btn)
@@ -355,9 +438,12 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(mode_frame)
 
-        # 4. CARD: AUDIO DECK (Unified Studio Slider & LED Levels)
+        # 4. MD3 CARD: AUDIO DECK (Unified Studio Slider & LED Levels)
         self.deck_card = QFrame()
-        self.deck_card.setStyleSheet("background-color: #13161F; border: 1px solid #1E2330; border-radius: 12px;")
+        self.deck_card.setStyleSheet(
+            f"background-color: {c['surface_container']}; "
+            f"border: 1px solid {c['outline_variant']}; border-radius: 18px;"
+        )
         self.deck_layout = QVBoxLayout(self.deck_card)
         self.deck_layout.setContentsMargins(14, 14, 14, 14)
         self.deck_layout.setSpacing(12)
@@ -468,15 +554,18 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.deck_card)
 
-        # 5. HERO PRIMARY BUTTON & STATUS
+        # 5. MD3 HERO PILL BUTTON & STATUS
         hero_box = QVBoxLayout()
         hero_box.setSpacing(8)
 
+        c = MD3
         self.btn_toggle = QPushButton("▶   START STREAMING")
         self.btn_toggle.setFixedHeight(48)
         self.btn_toggle.setFont(QFont("sans-serif", 13, QFont.Bold))
         self.btn_toggle.setStyleSheet(
-            "background-color: #2563EB; color: #FFFFFF; border-radius: 10px; border: 1px solid #3B82F6; letter-spacing: 0.5px;"
+            f"QPushButton {{ background-color: {c['primary']}; color: {c['on_primary']}; "
+            "border-radius: 24px; border: none; letter-spacing: 0.4px; }}"
+            f"QPushButton:hover {{ background-color: {c['on_primary_container']}; }}"
         )
         self.btn_toggle.clicked.connect(self.toggle_streaming)
         hero_box.addWidget(self.btn_toggle)
@@ -485,7 +574,7 @@ class MainWindow(QMainWindow):
         self.lbl_telemetry = QLabel("Ready • Press Start Streaming")
         self.lbl_telemetry.setAlignment(Qt.AlignCenter)
         self.lbl_telemetry.setFont(QFont("monospace", 10))
-        self.lbl_telemetry.setStyleSheet("color: #64748B;")
+        self.lbl_telemetry.setStyleSheet(f"color: {c['muted']};")
         hero_box.addWidget(self.lbl_telemetry)
 
         root_layout.addLayout(hero_box)
@@ -494,49 +583,81 @@ class MainWindow(QMainWindow):
         self._set_mode(MODE_SPEAKER)
 
     def _apply_theme(self):
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #0B0D12;
-            }
-            QWidget {
-                color: #F8FAFC;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            }
-            QPushButton[checkable="true"] {
+        c = MD3
+        self.setStyleSheet(
+            md3_base_stylesheet()
+            + f"""
+            QPushButton[checkable="true"] {{
                 background-color: transparent;
-                color: #8E95A2;
+                color: {c['on_surface_variant']};
                 border: none;
-                border-radius: 6px;
-            }
-            QPushButton[checkable="true"]:checked {
-                background-color: #2563EB;
-                color: #FFFFFF;
-            }
-            QSlider::groove:horizontal {
-                height: 4px;
-                background: #1E2330;
-                border-radius: 2px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #3B82F6;
-                border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: #FFFFFF;
-                border: 1px solid #3B82F6;
-                width: 14px;
-                margin-top: -5px;
-                margin-bottom: -5px;
-                border-radius: 7px;
-            }
-            QComboBox {
-                background-color: #161A22;
-                color: #F8FAFC;
-                border: 1px solid #222634;
-                border-radius: 6px;
-                padding: 4px 8px;
-            }
-        """)
+                border-radius: 16px;
+            }}
+            QPushButton[checkable="true"]:hover {{
+                background-color: {c['surface_container_high']};
+            }}
+            QPushButton[checkable="true"]:checked {{
+                background-color: {c['secondary_container']};
+                color: {c['on_secondary_container']};
+            }}
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: {c['surface_container_highest']};
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {c['primary']};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {c['primary']};
+                border: 2px solid {c['on_primary']};
+                width: 16px;
+                height: 16px;
+                margin-top: -6px;
+                margin-bottom: -6px;
+                border-radius: 9px;
+            }}
+            """
+        )
+
+    def _build_md3_menu(self):
+        self.md3_menu = QMenu(self)
+        act_wifi = self.md3_menu.addAction("📶  Wi-Fi Devices & Pairing")
+        act_wifi.triggered.connect(self._open_wifi_dialog)
+
+        act_find = self.md3_menu.addAction("⚡  Auto-Find Phone (mDNS)")
+        act_find.triggered.connect(self._auto_find_and_connect)
+
+        act_usb = self.md3_menu.addAction("🔌  Switch USB → Wi-Fi")
+        act_usb.triggered.connect(self._auto_switch_usb_to_wifi)
+
+        self.md3_menu.addSeparator()
+
+        act_settings = self.md3_menu.addAction("⚙  Audio & Advanced Settings")
+        act_settings.triggered.connect(self._open_settings_dialog)
+
+        act_apk = self.md3_menu.addAction("📲  Install Companion APK")
+        act_apk.triggered.connect(self._on_install_apk_clicked)
+
+        act_guide = self.md3_menu.addAction("📖  Wireless Setup Guide")
+        act_guide.triggered.connect(self._open_wireless_guide)
+
+        self.md3_menu.addSeparator()
+
+        act_quit = self.md3_menu.addAction("✕  Quit Sonopipe")
+        act_quit.triggered.connect(self._quit_app)
+
+    def _show_md3_menu(self):
+        pos = self.btn_menu.mapToGlobal(self.btn_menu.rect().bottomRight())
+        pos.setX(pos.x() - self.md3_menu.sizeHint().width())
+        pos.setY(pos.y() + 6)
+        self.md3_menu.exec(pos)
+
+    def _open_wifi_dialog(self):
+        dlg = WifiConnectDialog(self)
+        dlg.exec()
+        self.refresh_devices()
 
     def _set_mode(self, mode: str):
         self.current_mode = mode
@@ -556,32 +677,48 @@ class MainWindow(QMainWindow):
             self.mic_widget.setVisible(True)
             self.btn_toggle.setText("▶   START HEADSET DUPLEX")
 
-    def refresh_devices(self):
+    def refresh_devices(self, select_serial: Optional[str] = None):
+        c = MD3
+        prev_serial = select_serial or (self.device_combo.currentData() or "")
         self.device_combo.clear()
         if not self.adb.is_available():
             self.device_combo.addItem("⚠ ADB not found in PATH", "")
             self.lbl_device_status.setText("Install android-tools or check PATH")
-            self.status_dot.setStyleSheet("color: #EF4444;")
+            self.status_dot.setStyleSheet(f"color: {c['error']};")
+            self._refresh_quick_wifi_bar()
             return
 
         devices = self.adb.list_devices()
         if not devices:
             self.device_combo.addItem("○ No devices connected", "")
-            self.lbl_device_status.setText("Plug in USB cable or click ⚡ Auto-Find for Wi-Fi")
-            self.status_dot.setStyleSheet("color: #64748B;")
+            self.lbl_device_status.setText("Plug in USB, click ⚡ Auto, or tap a saved Wi-Fi chip")
+            self.status_dot.setStyleSheet(f"color: {c['muted']};")
+            self._refresh_quick_wifi_bar()
             return
 
         active_count = 0
-        for dev in devices:
+        select_idx = 0
+        for idx, dev in enumerate(devices):
             is_wifi = ":" in dev.serial
             tag = " [Wi-Fi]" if is_wifi else " [USB]"
             name = dev.model or ("Wireless Device" if is_wifi else "Android Device")
             state_warning = f" — ⚠ {dev.state.upper()}" if dev.state != "device" else ""
             label = f"{name}{tag} ({dev.serial}){state_warning}"
             self.device_combo.addItem(label, dev.serial)
+            if prev_serial and dev.serial == prev_serial:
+                select_idx = idx
             if dev.state == "device":
                 active_count += 1
+                # Automatically remember any connected Wi-Fi device
+                if is_wifi:
+                    host, p_str = dev.serial.rsplit(":", 1)
+                    try:
+                        port = int(p_str)
+                    except ValueError:
+                        port = 5555
+                    self.wifi_store.save_device(host, port, model=dev.model)
 
+        self.device_combo.setCurrentIndex(select_idx)
         selected_serial = self.device_combo.currentData() or ""
         if ":" in selected_serial:
             self.lbl_device_status.setText(f"Connected wirelessly via Wi-Fi ({selected_serial})")
@@ -591,18 +728,110 @@ class MainWindow(QMainWindow):
             self.lbl_device_status.setText(f"Detected {len(devices)} device(s)")
 
         if active_count > 0:
-            self.status_dot.setStyleSheet("color: #10B981;" if (self.streamer or self.mic_receiver) else "color: #38BDF8;")
+            self.status_dot.setStyleSheet(
+                f"color: {c['success']};" if (self.streamer or self.mic_receiver) else f"color: {c['primary']};"
+            )
         else:
-            self.status_dot.setStyleSheet("color: #F59E0B;")
+            self.status_dot.setStyleSheet(f"color: {c['warning']};")
+
+        self._refresh_quick_wifi_bar()
+
+    def _refresh_quick_wifi_bar(self):
+        """Show 1-click MD3 chips for remembered Wi-Fi devices not currently connected."""
+        c = MD3
+        while self.quick_wifi_layout.count():
+            item = self.quick_wifi_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        active_serials = {
+            self.device_combo.itemData(i)
+            for i in range(self.device_combo.count())
+            if self.device_combo.itemData(i)
+        }
+        saved = [
+            d for d in self.wifi_store.list_devices()
+            if d.get("serial") not in active_serials
+        ]
+
+        if not saved:
+            self.quick_wifi_bar.setVisible(False)
+            return
+
+        lbl = QLabel("Saved:")
+        lbl.setStyleSheet(f"color: {c['muted']}; font-size: 11px; font-weight: 600; border: none;")
+        self.quick_wifi_layout.addWidget(lbl)
+
+        for dev in saved[:2]:
+            host = dev["host"]
+            port = int(dev.get("port", 5555))
+            name = dev.get("model") or host
+            short_name = name if len(name) <= 16 else name[:15] + "…"
+            chip = QPushButton(f"📶 {short_name}")
+            chip.setFixedHeight(26)
+            chip.setToolTip(f"Connect to {name} ({host}:{port})")
+            chip.setStyleSheet(
+                f"QPushButton {{ background-color: {c['surface_container_high']}; color: {c['primary']}; "
+                f"border: 1px solid {c['outline_variant']}; border-radius: 13px; "
+                "padding: 0 10px; font-size: 11px; font-weight: 600; }}"
+                f"QPushButton:hover {{ background-color: {c['primary_container']}; color: {c['on_primary_container']}; }}"
+            )
+            chip.clicked.connect(lambda _, h=host, p=port: self._quick_connect_saved(h, p))
+            self.quick_wifi_layout.addWidget(chip)
+
+        self.quick_wifi_layout.addStretch()
+        self.quick_wifi_bar.setVisible(True)
+
+    def _quick_connect_saved(self, host: str, port: int):
+        self.lbl_device_status.setText(f"Connecting to {host}:{port}...")
+        self._wifi_conn_worker = WifiConnectWorker(self.adb, host, port)
+        self._wifi_conn_worker.finished.connect(self._on_quick_wifi_connected)
+        self._wifi_conn_worker.start()
+
+    def _on_quick_wifi_connected(self, ok: bool, msg: str, host: str, port: int):
+        if ok:
+            self.wifi_ip_input.setText(host)
+            self.wifi_port_spin.setValue(port)
+            self.wifi_store.save_device(host, port)
+            self.refresh_devices(select_serial=f"{host}:{port}")
+        else:
+            self.refresh_devices()
+            QMessageBox.warning(self, "Connection Failed", f"Could not connect to {host}:{port}:\n\n{msg}")
+
+    def _auto_reconnect_saved_wifi(self):
+        """Silently reconnect to remembered auto-connect Wi-Fi devices on startup."""
+        devices = self.adb.list_devices()
+        if any(":" in d.serial and d.state == "device" for d in devices):
+            return
+        candidates = self.wifi_store.get_auto_connect_devices()
+        if not candidates:
+            return
+        self.lbl_device_status.setText("Reconnecting to remembered Wi-Fi device...")
+        self._auto_reconn_worker = AutoReconnectWorker(self.adb, candidates)
+        self._auto_reconn_worker.finished.connect(self._on_auto_reconnect_finished)
+        self._auto_reconn_worker.start()
+
+    def _on_auto_reconnect_finished(self, connected_serial: str):
+        if connected_serial:
+            host, p_str = connected_serial.rsplit(":", 1)
+            self.wifi_ip_input.setText(host)
+            self.wifi_port_spin.setValue(int(p_str))
+            self.refresh_devices(select_serial=connected_serial)
+        else:
+            self.refresh_devices()
 
     def _auto_find_and_connect(self):
-        """Discovers phone on Wi-Fi via mDNS and establishes connection immediately."""
+        """Discovers phone on Wi-Fi via mDNS in the background and connects immediately."""
         self.lbl_device_status.setText("Scanning Wi-Fi network via mDNS...")
-        QApplication.processEvents()
+        self.btn_quick_find.setEnabled(False)
+        self._wifi_scan_worker = WifiScanWorker(self.adb)
+        self._wifi_scan_worker.finished.connect(self._on_auto_find_finished)
+        self._wifi_scan_worker.start()
 
-        services = self.adb.discover_mdns_services()
+    def _on_auto_find_finished(self, services: list):
+        self.btn_quick_find.setEnabled(True)
         if not services:
-            # Fallback to USB switch if phone is connected via USB
             devices = self.adb.list_devices()
             usb_devs = [d for d in devices if ":" not in d.serial and d.state == "device"]
             if usb_devs:
@@ -615,7 +844,7 @@ class MainWindow(QMainWindow):
                 "No Wireless ADB devices found on local Wi-Fi.\n\n"
                 "1. Make sure phone is on the same Wi-Fi network.\n"
                 "2. Ensure 'Wireless Debugging' is ON in Developer options.\n"
-                "3. Or click ⚙ Settings → Pair with QR Code."
+                "3. Or click 📶 Wi-Fi → QR Pair / 6-Digit Code."
             )
             self.refresh_devices()
             return
@@ -629,12 +858,7 @@ class MainWindow(QMainWindow):
 
         self.wifi_ip_input.setText(host)
         self.wifi_port_spin.setValue(port)
-        ok, msg = self.adb.connect_wireless(host, port)
-        self.refresh_devices()
-        if ok:
-            self.lbl_device_status.setText(f"Connected to {srv_name} ({ip_port})")
-        else:
-            QMessageBox.warning(self, "Connection Failed", f"Could not connect to {ip_port}:\n\n{msg}")
+        self._quick_connect_saved(host, port)
 
     # Alias for compatibility with settings dialog
     _auto_find_mdns = _auto_find_and_connect
@@ -646,7 +870,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No USB Device", "Please connect phone via USB first.")
             return
 
-        target_serial = usb_devices[0].serial
+        target_dev = usb_devices[0]
+        target_serial = target_dev.serial
         ip = self.adb.get_device_wlan_ip(target_serial)
         if not ip:
             QMessageBox.warning(self, "IP Not Found", "Could not detect phone Wi-Fi IP.")
@@ -654,9 +879,18 @@ class MainWindow(QMainWindow):
 
         self.adb.enable_tcpip(5555, serial=target_serial)
         ok, _ = self.adb.connect_wireless(ip, 5555)
-        self.refresh_devices()
         if ok:
-            QMessageBox.information(self, "Wireless Connected", f"🎉 Connected wirelessly to {ip}:5555!\nYou can now unplug USB.")
+            self.wifi_ip_input.setText(ip)
+            self.wifi_port_spin.setValue(5555)
+            self.wifi_store.save_device(ip, 5555, model=target_dev.model)
+            self.refresh_devices(select_serial=f"{ip}:5555")
+            QMessageBox.information(
+                self,
+                "Wireless Connected",
+                f"Connected wirelessly to {ip}:5555 and remembered this device!\nYou can now unplug USB.",
+            )
+        else:
+            self.refresh_devices()
 
     def _open_settings_dialog(self):
         dlg = SettingsDialog(self)
@@ -744,12 +978,14 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
 
+        c = MD3
         self.btn_toggle.setText("■   STOP STREAMING")
         self.btn_toggle.setStyleSheet(
-            "background-color: #DC2626; color: #FFFFFF; border-radius: 10px; "
-            "border: 1px solid #EF4444; font-weight: bold; letter-spacing: 0.5px;"
+            f"QPushButton {{ background-color: {c['error_container']}; color: {c['on_error_container']}; "
+            "border-radius: 24px; border: none; font-weight: bold; letter-spacing: 0.4px; }}"
+            f"QPushButton:hover {{ background-color: {c['error']}; color: {c['error_container']}; }}"
         )
-        self.status_dot.setStyleSheet("color: #10B981;")
+        self.status_dot.setStyleSheet(f"color: {c['success']};")
 
         if self.tray_icon:
             self.tray_icon.setIcon(self._create_app_icon(True))
@@ -771,12 +1007,14 @@ class MainWindow(QMainWindow):
         self.spk_meter.set_levels(0.0, 0.0, 0.0, 0.0)
         self.mic_meter.set_levels(0.0, 0.0, 0.0, 0.0)
 
+        c = MD3
         self.btn_toggle.setStyleSheet(
-            "background-color: #2563EB; color: #FFFFFF; border-radius: 10px; "
-            "border: 1px solid #3B82F6; font-weight: bold; letter-spacing: 0.5px;"
+            f"QPushButton {{ background-color: {c['primary']}; color: {c['on_primary']}; "
+            "border-radius: 24px; border: none; font-weight: bold; letter-spacing: 0.4px; }}"
+            f"QPushButton:hover {{ background-color: {c['on_primary_container']}; }}"
         )
         self._set_mode(self.current_mode)
-        self.status_dot.setStyleSheet("color: #38BDF8;")
+        self.status_dot.setStyleSheet(f"color: {c['primary']};")
         self.lbl_telemetry.setText("Ready • Press Start Streaming")
 
         if self.tray_icon:
@@ -903,10 +1141,12 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
         ok, msg = self.adb.connect_wireless(host, port)
-        self.refresh_devices()
         if ok:
+            self.wifi_store.save_device(host, port)
+            self.refresh_devices(select_serial=f"{host}:{port}")
             QMessageBox.information(self, "Connected", f"Connected wirelessly to {host}:{port}!")
         else:
+            self.refresh_devices()
             QMessageBox.warning(self, "Failed", f"Could not connect to {host}:{port}:\n\n{msg}")
 
     def _disconnect_wireless_adb(self):
@@ -930,7 +1170,6 @@ class MainWindow(QMainWindow):
         self.apk_worker.start()
 
     def _open_wireless_guide(self):
-        from sonopipe.gui.main_window import WirelessGuideDialog
         dlg = WirelessGuideDialog(self)
         dlg.exec()
 

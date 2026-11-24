@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from sonopipe.adb.manager import AdbManager
+from sonopipe.gui.theme import MD3, md3_base_stylesheet
 
 
 def get_local_lan_ip() -> str:
@@ -70,49 +71,25 @@ class WirelessQrDialog(QDialog):
     def __init__(self, adb: AdbManager, parent=None):
         super().__init__(parent)
         self.adb = adb
+        c = MD3
         self.setWindowTitle("Wireless ADB QR Pairing")
         self.resize(500, 580)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #0F1116;
-                color: #F8FAFC;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            }
-            QTabWidget::pane {
-                border: 1px solid #262934;
-                border-radius: 12px;
-                background-color: #171A21;
-                padding: 16px;
-            }
-            QTabBar::tab {
-                background-color: #12141A;
-                color: #94A3B8;
-                padding: 8px 16px;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                margin-right: 4px;
-                font-weight: 600;
-            }
-            QTabBar::tab:selected {
-                background-color: #1E3A8A;
-                color: #60A5FA;
-                border-bottom: 2px solid #3B82F6;
-            }
-            QLabel {
-                color: #CBD5E1;
-            }
-            QPushButton {
-                background-color: #2563EB;
-                color: #FFFFFF;
-                border-radius: 8px;
-                padding: 9px 18px;
-                font-weight: bold;
+        self.setStyleSheet(
+            md3_base_stylesheet()
+            + f"""
+            QPushButton {{
+                background-color: {c['primary']};
+                color: {c['on_primary']};
+                border-radius: 19px;
+                padding: 9px 20px;
+                font-weight: 700;
                 border: none;
-            }
-            QPushButton:hover {
-                background-color: #1D4ED8;
-            }
-        """)
+            }}
+            QPushButton:hover {{
+                background-color: {c['on_primary_container']};
+            }}
+            """
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -199,37 +176,22 @@ class WirelessPairDialog(QDialog):
     def __init__(self, adb: AdbManager, default_ip: str = "", parent=None):
         super().__init__(parent)
         self.adb = adb
+        c = MD3
         self.setWindowTitle("Android 11+ Wireless Pairing")
-        self.resize(420, 260)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #0B0D12;
-                color: #F8FAFC;
-            }
-            QLabel {
-                color: #94A3B8;
-                font-size: 12px;
-            }
-            QLineEdit, QSpinBox {
-                background-color: #13161F;
-                color: #F8FAFC;
-                border: 1px solid #1E2330;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 13px;
-            }
-            QPushButton {
-                background-color: #2563EB;
-                color: white;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
+        self.resize(420, 270)
+        self.setStyleSheet(
+            md3_base_stylesheet()
+            + f"""
+            QPushButton {{
+                background-color: {c['primary']};
+                color: {c['on_primary']};
+                border-radius: 18px;
+                padding: 8px 18px;
+                font-weight: 700;
                 border: none;
-            }
-            QPushButton:hover {
-                background-color: #1D4ED8;
-            }
-        """)
+            }}
+            """
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="sonopipe",
-    version="1.4.0",
+    version="1.5.0",
     description="Stream system audio from PC (Linux/Windows) to Android smartphone via ADB USB.",
     author="ADBSound Team",
     packages=find_packages(),

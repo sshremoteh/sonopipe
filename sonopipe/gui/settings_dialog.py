@@ -29,6 +29,7 @@ from sonopipe.adb.manager import AdbManager
 from sonopipe.adb.installer import install_and_launch
 from sonopipe.adb.qr_dialog import WirelessQrDialog, WirelessPairDialog
 from sonopipe.capture.factory import list_audio_devices
+from sonopipe.gui.theme import MD3, md3_base_stylesheet
 
 
 class SettingsDialog(QDialog):
@@ -228,53 +229,30 @@ class SettingsDialog(QDialog):
         return line
 
     def _apply_theme(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #0D0F14;
-                color: #F8FAFC;
-            }
-            QTabWidget::pane {
-                border: 1px solid #1E293B;
-                background-color: #13171F;
-                border-radius: 8px;
-            }
-            QTabBar::tab {
-                background-color: #0D0F14;
-                color: #94A3B8;
-                padding: 8px 16px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-weight: bold;
+        c = MD3
+        self.setStyleSheet(
+            md3_base_stylesheet()
+            + f"""
+            QPushButton {{
+                background-color: {c['surface_container_high']};
+                color: {c['on_surface']};
+                border: 1px solid {c['outline_variant']};
+                border-radius: 16px;
+                padding: 7px 14px;
+                font-weight: 600;
                 font-size: 12px;
-            }
-            QTabBar::tab:selected {
-                background-color: #13171F;
-                color: #38BDF8;
-                border-bottom: 2px solid #38BDF8;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                background-color: #090B0E;
-                color: #F8FAFC;
-                border: 1px solid #27272A;
-                border-radius: 6px;
-                padding: 6px;
-                font-size: 12px;
-            }
-            QPushButton {
-                background-color: #1E293B;
-                color: #F8FAFC;
-                border: 1px solid #334155;
-                border-radius: 6px;
-                padding: 6px 10px;
-            }
-            QPushButton:hover {
-                border-color: #64748B;
-            }
-            QLabel {
-                color: #F8FAFC;
-                font-size: 12px;
-            }
-        """)
+            }}
+            QPushButton:hover {{
+                background-color: {c['surface_container_highest']};
+                border-color: {c['outline']};
+            }}
+            QPushButton:checked {{
+                background-color: {c['primary_container']};
+                color: {c['on_primary_container']};
+                border-color: {c['primary']};
+            }}
+            """
+        )
 
     def _populate_audio_sources(self):
         self.source_combo.clear()
